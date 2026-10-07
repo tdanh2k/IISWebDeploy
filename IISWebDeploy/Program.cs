@@ -60,6 +60,10 @@ public static class HomeRenderChecks
         foreach (var site in sites) { selected.TryAdd(site.Id, 0); messages.TryAdd(site.Id, ""); }
         if (!selected.TryGetValue("99", out var value) || value != 0 || !messages.ContainsKey("99"))
             throw new InvalidOperationException("Home per-site state initialization check failed.");
+        var parent = new SiteRecord { Id = "7", Name = "tckh_qnu.psctelecom.com.vn" };
+        var child = new SiteRecord { Id = "app:7:/api", Name = "tckh_qnu.psctelecom.com.vn api", ParentSiteId = parent.Id, ApplicationPath = "/api", TargetKind = TargetKind.Application };
+        if (ApplicationTargetIdentity.DisplayNameForApplication(parent.Name, child.Name, child.ApplicationPath) != "tckh_qnu.psctelecom.com.vn/api" || ApplicationTargetIdentity.DisplayNameForApplication(parent.Name, "tckh_qnu.psctelecom.com.vn api/v1", "/api/v1") != "tckh_qnu.psctelecom.com.vn/api/v1" || ApplicationTargetIdentity.DisplayNameForApplication("api", "api api", "/api") != "api/api" || ApplicationTargetIdentity.DisplayNameForApplication(null, child.Name, child.ApplicationPath) != child.Name || ApplicationTargetIdentity.DisplayNameForApplication("Main", "Main", "/") != "Main")
+            throw new InvalidOperationException("Home route-derived title formatting check failed.");
     }
 }
 

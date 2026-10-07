@@ -38,6 +38,13 @@ public static class ApplicationTargetIdentity
         var route = path.Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault();
         return string.IsNullOrWhiteSpace(route) ? siteName + " " + path : siteName + " " + route;
     }
+
+    public static string DisplayNameForApplication(string? parentName, string fallbackName, string applicationPath)
+    {
+        var path = NormalizePath(applicationPath);
+        if (path == "/" || string.IsNullOrWhiteSpace(parentName)) return fallbackName;
+        return $"{parentName.TrimEnd('/')}{path}";
+    }
 }
 
 public sealed class DeploymentOptions

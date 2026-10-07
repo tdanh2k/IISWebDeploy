@@ -1,3 +1,12 @@
-.app-shell { min-height: 100vh; }
-main { max-width: 1200px; margin: 0 auto; }
-.content { padding: 1.5rem; }
+::deep(.app-shell) { min-height: 100vh; background: hsl(var(--background)); color: hsl(var(--foreground)); }
+::deep(.app-header) { display: flex; align-items: center; gap: 1rem; min-height: 3.5rem; padding: .75rem 1.25rem; font-weight: 600; }
+.sidebar-toggle { border: 0; background: transparent; color: inherit; padding: .4rem .6rem; cursor: pointer; }
+.sidebar-toggle:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }
+::deep(.content) { width: 100%; padding: 1.5rem; }
+::deep(.content article) { max-width: 1400px; margin: 0 auto; }
+::deep(.sidebar-brand) { font-weight: 700; white-space: nowrap; overflow: hidden; }
+::deep(.logout-button) { display: flex; align-items: center; gap: .65rem; width: 100%; border: 0; padding: .6rem .7rem; border-radius: .375rem; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+::deep(.logout-button:hover) { background: hsl(var(--sidebar-accent)); color: hsl(var(--sidebar-accent-foreground)); }
+::deep(.logout-button:focus-visible) { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }
+::deep(.sidebar-footer form) { margin: 0; }
+@media (max-width: 700px) { ::deep(.content) { padding: 1rem; } }

@@ -9,9 +9,14 @@ trap 'rm -f "$cookie" "$page" "$logout_page"' EXIT
 
 status() { curl -k -sS "$@"; }
 
-[ "$(status -o /dev/null -w '%{http_code}' "$base/login")" = 200 ]
+[ "$(status -o "$page" -w '%{http_code}' "$base/login")" = 200 ]
+grep -q 'name="password"' "$page"
+grep -q 'type="password"' "$page"
+grep -q 'name="__RequestVerificationToken"' "$page"
+! grep -q 'Deploy Web TCKH' "$page"
 [ "$(status -o "$page" -w '%{http_code}' -c "$cookie" "$base/login?ReturnUrl=%2F")" = 200 ]
 token=$(sed -n 's/.*name="__RequestVerificationToken"[^>]*value="\([^"]*\)".*/\1/p' "$page" | head -n 1)
+if [ -z "$token" ]; then token=$(sed -n 's/.*name="__RequestVerificationToken" value="\([^"]*\)".*/\1/p' "$page" | head -n 1); fi
 [ -n "$token" ]
 [ "$(status -o /dev/null -w '%{http_code}' -b "$cookie" -X POST "$base/auth/login" --data 'password=Test%40123')" = 400 ]
 [ "$(status -o /dev/null -w '%{http_code}' -b "$cookie" -X POST "$base/auth/login" --data-urlencode '__RequestVerificationToken=invalid' --data 'password=Test%40123')" = 400 ]
@@ -20,11 +25,16 @@ headers=$(status -D - -o /dev/null -b "$cookie" -c "$cookie" -X POST "$base/auth
 printf '%s\n' "$headers" | grep -qi '^set-cookie: iisdeploy.auth='
 printf '%s\n' "$headers" | grep -qi '^set-cookie: iisdeploy.auth=.*httponly'
 ! printf '%s\n' "$headers" | grep -qi '^set-cookie: iisdeploy.auth=.*secure'
-[ "$(status -o /dev/null -w '%{http_code}' -b "$cookie" "$base/")" = 200 ]
+[ "$(status -o "$page" -w '%{http_code}' -b "$cookie" "$base/")" = 200 ]
+grep -q 'Deploy Web TCKH' "$page"
+grep -q 'aria-label="Toggle navigation"' "$page"
+grep -qi 'aria-expanded="true"' "$page"
+grep -qi 'action="/logout"' "$page"
 [ "$(status -o /dev/null -w '%{http_code}' -X POST "$base/login" --data 'password=Test%40123')" = 400 ]
 [ "$(status -o "$logout_page" -w '%{http_code}' -b "$cookie" -c "$cookie" "$base/")" = 200 ]
 logout_token=$(sed -n 's/.*name="__RequestVerificationToken"[^>]*value="\([^"]*\)".*/\1/p' "$logout_page" | head -n 1)
+if [ -z "$logout_token" ]; then logout_token=$(sed -n 's/.*name="__RequestVerificationToken" value="\([^"]*\)".*/\1/p' "$logout_page" | head -n 1); fi
 [ -n "$logout_token" ]
 [ "$(status -o /dev/null -w '%{http_code}' -b "$cookie" -c "$cookie" -X POST "$base/logout" --data-urlencode "__RequestVerificationToken=$logout_token")" = 302 ]
 [ "$(status -o /dev/null -w '%{http_code}' -b "$cookie" "$base/")" = 302 ]
-printf '%s\n' 'login regression check passed'
+printf '%s\n' 'login and shell regression check passed'

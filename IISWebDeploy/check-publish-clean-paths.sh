@@ -2,7 +2,7 @@
 set -eu
 
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-publish_dir="$project_dir/bin/Release/net9.0/publish"
+publish_dir="$project_dir/bin/Release/net10.0/publish"
 profile="$project_dir/Properties/PublishProfiles/FolderProfile.pubxml"
 clean_script="$project_dir/publish-clean.sh"
 
@@ -10,9 +10,9 @@ clean_script="$project_dir/publish-clean.sh"
 [ "$(CDPATH= cd -- "$project_dir" && pwd)/obj" = "$project_dir/obj" ]
 [ "$(CDPATH= cd -- "$project_dir/.." && pwd)/IISWebDeploy" = "$project_dir" ]
 [ -f "$profile" ]
-[ "$(sed -n 's#.*<PublishDir>\(.*\)</PublishDir>#\1#p' "$profile")" = '$(MSBuildProjectDirectory)/bin/Release/net9.0/publish/' ]
+[ "$(sed -n 's#.*<PublishDir>\(.*\)</PublishDir>#\1#p' "$profile")" = '$(MSBuildProjectDirectory)/bin/Release/net10.0/publish/' ]
 grep -Fq 'Name="CleanFolderPublishDirectory" BeforeTargets="PrepareForPublish"' "$profile"
-grep -Fq "Condition=\"'\$(DeleteExistingFiles)' == 'true' And '\$(PublishDir)' == '\$(MSBuildProjectDirectory)/bin/Release/net9.0/publish/'\"" "$profile"
+grep -Fq "Condition=\"'\$(DeleteExistingFiles)' == 'true' And '\$(PublishDir)' == '\$(MSBuildProjectDirectory)/bin/Release/net10.0/publish/'\"" "$profile"
 grep -Fq '<RemoveDir Directories="$(PublishDir)" />' "$profile"
 
 cleanup_line=$(grep -n '^rm -rf -- "$project_dir/bin" "$project_dir/obj"$' "$clean_script" | cut -d: -f1)
@@ -24,4 +24,7 @@ sentinel="$publish_dir/.stale-cleanup-sentinel"
 printf '%s\n' stale > "$sentinel"
 dotnet publish "$project_dir/IISWebDeploy.csproj" -p:PublishProfile=Properties/PublishProfiles/FolderProfile.pubxml
 [ ! -e "$sentinel" ]
-[ -f "$publish_dir/wwwroot/index.html" ]
+[ -f "$publish_dir/IISWebDeploy.dll" ]
+[ -f "$publish_dir/wwwroot/IISWebDeploy.styles.css" ]
+[ -f "$publish_dir/wwwroot/_content/ShadCn.Blazor.Theme.Default/theme.css" ]
+! find "$publish_dir/wwwroot" -iname '*bootstrap*' -print -quit | grep -q .

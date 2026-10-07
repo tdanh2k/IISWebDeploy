@@ -1,7 +1,24 @@
 @inherits LayoutComponentBase
-<div class="app-shell">
-    <NavMenu />
-    <main>
-        <article class="content">@Body</article>
-    </main>
-</div>
+@inject NavigationManager Navigation
+<AppLayout Class="app-shell">
+    <Sidebar Collapsible="true" @bind-Collapsed="_sidebarCollapsed" AdditionalAttributes="@SidebarAttributes">
+        <SidebarHeader><span class="sidebar-brand">@(_sidebarCollapsed ? "DW" : "Deploy Web TCKH")</span></SidebarHeader>
+        <SidebarContent>
+            <nav aria-label="Main navigation">
+                <SidebarMenu>
+                    <SidebarMenuItem Href="/" Active="@(Navigation.Uri.TrimEnd('/') == Navigation.BaseUri.TrimEnd('/'))" Title="Home">
+                        <Icon>⌂</Icon><ChildContent>Home</ChildContent>
+                    </SidebarMenuItem>
+                </SidebarMenu>
+            </nav>
+        </SidebarContent>
+        <SidebarFooter>
+            <form method="post" action="/logout"><AntiforgeryToken /><button class="logout-button" type="submit">⇥ <span>Đăng xuất</span></button></form>
+        </SidebarFooter>
+    </Sidebar>
+    <AppLayoutMain>
+        <AppLayoutHeader Class="app-header"><button type="button" class="sidebar-toggle" aria-label="Toggle navigation" aria-expanded="@(!_sidebarCollapsed)" @onclick="ToggleSidebar">☰</button><strong>Deploy Web TCKH</strong></AppLayoutHeader>
+        <AppLayoutBody Class="content"><article>@Body</article></AppLayoutBody>
+    </AppLayoutMain>
+</AppLayout>
+@code { private bool _sidebarCollapsed; private void ToggleSidebar() => _sidebarCollapsed = !_sidebarCollapsed; private Dictionary<string, object> SidebarAttributes => new() { ["aria-label"] = "Application navigation" }; }

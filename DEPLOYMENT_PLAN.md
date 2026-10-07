@@ -2,6 +2,10 @@
 
 ## Scope and status
 
+### .NET 10 IIS prerequisite
+
+Install the [ASP.NET Core Hosting Bundle for .NET 10](https://dotnet.microsoft.com/download/dotnet/10.0) on the Windows IIS server before publishing this application. The bundle provides the .NET 10 runtime and ASP.NET Core Module for IIS. Verify the application pool and restart IIS after installation as required.
+
 ### Confirmed requirements
 
 - The current application is standalone Blazor WebAssembly in [`IISWebDeploy/IISWebDeploy.csproj`](IISWebDeploy/IISWebDeploy.csproj); this is the historical/current architecture awaiting migration. Migrate it to one ASP.NET Core Blazor Web App project using Interactive Server rendering, with frontend and backend together, one IIS application, and one publish artifact. Do not retain separate API, client, or server projects.

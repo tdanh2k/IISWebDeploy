@@ -18,12 +18,20 @@
 {
     var archives = Store.Archives(site.Id);
     var parentId = site.ParentSiteId.Length == 0 ? site.Id : site.ParentSiteId;
+    var parent = site.TargetKind == TargetKind.Application
+        ? _sites.FirstOrDefault(x => string.Equals(x.Id, parentId, StringComparison.OrdinalIgnoreCase)) ?? Store.Site(parentId)
+        : null;
+    var displayName = site.TargetKind == TargetKind.Application
+        ? ApplicationTargetIdentity.DisplayNameForApplication(parent?.Name, site.Name, site.ApplicationPath)
+        : site.Name;
     var parentBusy = Busy(parentId);
     <section class="site-card" aria-labelledby="site-@site.Id">
         <div class="card-head">
-            <h2 id="site-@site.Id">@site.Name</h2>
-            <span class="pill @site.IisState.ToLowerInvariant()">IIS: @site.IisState</span>
-            <span class="pill @site.Health.ToString().ToLowerInvariant()">Health: @site.Health</span>
+            <h2 id="site-@site.Id">@displayName</h2>
+            <div class="status-pills">
+                <span class="pill @site.IisState.ToLowerInvariant()">IIS: @site.IisState</span>
+                <span class="pill @site.Health.ToString().ToLowerInvariant()">Health: @site.Health</span>
+            </div>
         </div>
         @if (site.TargetKind == TargetKind.Application)
         {
@@ -47,6 +55,8 @@
             <button @onclick="() => AcknowledgeRecovery(site)" disabled="@(!site.TargetAvailable || RecoveryBlocked(site))">Acknowledge recovery evidence</button>
         }
         <div class="actions">
+            <fieldset class="restore-controls">
+                <legend>Restore specific version</legend>
             <select @bind="_selected[site.Id]" aria-label="Version" disabled="@(!site.TargetAvailable || parentBusy)">
                 <option value="0">Select version</option>
                 @foreach (var archive in archives.Where(x => !x.Active))
@@ -55,6 +65,7 @@
                 }
             </select>
             <button @onclick="() => Restore(site)" disabled="@(!site.TargetAvailable || parentBusy || Selected(site.Id) is null)">Restore</button>
+            </fieldset>
             <label class="upload-zone" for="upload-@site.Id">
                 <strong>Drop ZIP here</strong> or <span class="picker-link">choose a ZIP file</span>
                 <InputFile id="@($"upload-{site.Id}")" OnChange="e => Upload(site, e)" accept=".zip,application/zip" aria-label="Upload ZIP" disabled="@(!site.TargetAvailable || parentBusy)" />
@@ -214,19 +225,22 @@
     private ValueTask<bool> JSConfirm() => JS.InvokeAsync<bool>("confirm", "Restore this version? The current deployment will be replaced.");
 }
 <style>
-.site-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; }
+.site-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; padding: 1rem; min-width: 0; }
 .site-card { min-width: 0; border: 1px solid #d3d7dc; border-radius: .5rem; padding: .7rem; font-size: .88rem; }
 .site-card p { margin: .35rem 0; overflow-wrap: anywhere; }
 .site-card h2 { margin: 0; font-size: 1rem; }
 .card-head, .actions { display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; margin-bottom: .45rem; }
-.card-head h2 { margin-right: auto; }
+.card-head { flex-direction: column; align-items: flex-start; }
+.status-pills { display: flex; flex-wrap: wrap; gap: .4rem; }
+.restore-controls { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; min-width: 0; margin: 0; padding: .35rem; }
+.restore-controls legend { padding: 0 .2rem; }
 .pill { border-radius: 999px; padding: .15rem .45rem; font-size: .75rem; font-weight: 600; }
 .started, .healthy { background: #d1fae5; color: #065f46; }
 .degraded { background: #fef3c7; color: #92400e; }
 .critical, .unknown { background: #fee2e2; color: #991b1b; }
 input, select { padding: .3rem; max-width: 100%; }
 .muted { color: #52606d; }
-.upload-zone { position: relative; display: inline-flex; gap: .25rem; align-items: center; min-height: 2.5rem; padding: .4rem .65rem; border: 2px dashed #64748b; border-radius: .5rem; cursor: pointer; }
+.upload-zone { position: relative; display: flex; flex: 1 1 100%; width: 100%; min-width: 0; gap: .25rem; align-items: center; min-height: 2.5rem; padding: .4rem .65rem; border: 2px dashed #64748b; border-radius: .5rem; cursor: pointer; }
 .upload-zone:focus-within, .upload-zone:hover { border-color: #1d4ed8; background: #eff6ff; }
 .upload-zone input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
 .picker-link { color: #1d4ed8; text-decoration: underline; }
