@@ -1,0 +1,11 @@
+@page "/login"
+@attribute [AllowAnonymous]
+@using Microsoft.AspNetCore.Authorization
+<PageTitle>Đăng nhập</PageTitle>
+<div class="login-card">
+    <h1>IIS Web Deploy</h1><p>Password-only access.</p>
+    @if (Error) { <p class="error" role="alert">Mật khẩu không đúng.</p> }
+    <form method="post" action="/auth/login"><AntiforgeryToken /><label for="password">Mật khẩu</label><input id="password" name="password" type="password" autocomplete="current-password" required /><button type="submit">Đăng nhập</button></form>
+</div>
+@code { [SupplyParameterFromQuery] public int? error { get; set; } private bool Error => error == 1; }
+<style>.login-card{max-width:28rem;margin:10vh auto;padding:2rem;border:1px solid #ddd;border-radius:.5rem}label,input,button{display:block;width:100%;margin:.6rem 0;padding:.6rem;box-sizing:border-box}.error{color:#9b1c1c}</style>

@@ -1,0 +1,4 @@
+.navbar { display: flex; align-items: center; gap: 1.5rem; padding: .65rem 1.5rem; background: #172554; color: white; }
+.navbar form { margin-left: auto; }
+.navbar button { padding: .35rem .65rem; color: #172554; background: white; border: 0; border-radius: .25rem; cursor: pointer; }
+.brand { font-weight: 700; }

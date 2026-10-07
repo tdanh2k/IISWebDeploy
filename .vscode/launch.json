@@ -1,0 +1,17 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": ".NET Launch IISWebDeploy.Server",
+            "type": "dotnet",
+            "request": "launch",
+            "projectPath": "${workspaceFolder}/IISWebDeploy.Server/IISWebDeploy.Server.csproj",
+            "launchBrowser": true,
+            "env": {
+                "ASPNETCORE_ENVIRONMENT": "Development",
+                "ASPNETCORE_URLS": "https://localhost:5001;http://localhost:5002",
+                "DOTNET_USE_POLLING_FILE_WATCHER": "1"
+            }
+        }
+    ]
+}

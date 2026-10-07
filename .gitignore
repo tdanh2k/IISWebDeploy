@@ -1,0 +1,4 @@
+IISWebDeploy/bin
+IISWebDeploy/obj
+IISWebDeploy/iisdeploy.sqlite
+*.log
