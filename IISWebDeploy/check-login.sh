@@ -13,7 +13,7 @@ status() { curl -k -sS "$@"; }
 grep -q 'name="password"' "$page"
 grep -q 'type="password"' "$page"
 grep -q 'name="__RequestVerificationToken"' "$page"
-! grep -q 'Deploy Web TCKH' "$page"
+! grep -q 'Deploy Web' "$page"
 [ "$(status -o "$page" -w '%{http_code}' -c "$cookie" "$base/login?ReturnUrl=%2F")" = 200 ]
 token=$(sed -n 's/.*name="__RequestVerificationToken"[^>]*value="\([^"]*\)".*/\1/p' "$page" | head -n 1)
 if [ -z "$token" ]; then token=$(sed -n 's/.*name="__RequestVerificationToken" value="\([^"]*\)".*/\1/p' "$page" | head -n 1); fi
@@ -26,7 +26,7 @@ printf '%s\n' "$headers" | grep -qi '^set-cookie: iisdeploy.auth='
 printf '%s\n' "$headers" | grep -qi '^set-cookie: iisdeploy.auth=.*httponly'
 ! printf '%s\n' "$headers" | grep -qi '^set-cookie: iisdeploy.auth=.*secure'
 [ "$(status -o "$page" -w '%{http_code}' -b "$cookie" "$base/")" = 200 ]
-grep -q 'Deploy Web TCKH' "$page"
+grep -q 'Deploy Web' "$page"
 grep -q 'aria-label="Toggle navigation"' "$page"
 grep -qi 'aria-expanded="true"' "$page"
 grep -qi 'action="/logout"' "$page"

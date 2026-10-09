@@ -4,11 +4,39 @@
 @using Microsoft.AspNetCore.Authorization
 <PageTitle>Đăng nhập</PageTitle>
 <Card Class="login-card">
-    <CardHeader><CardTitle>IIS Web Deploy</CardTitle><CardDescription>Password-only access.</CardDescription></CardHeader>
+    <CardHeader>
+        <CardTitle>IIS Web Deploy</CardTitle>
+        <CardDescription>Password-only access.</CardDescription>
+    </CardHeader>
     <CardContent>
-        @if (Error) { <Alert Variant="AlertVariant.Destructive" role="alert"><AlertTitle>Đăng nhập thất bại</AlertTitle><AlertDescription>Mật khẩu không đúng.</AlertDescription></Alert> }
-        <form method="post" action="/auth/login"><AntiforgeryToken /><label for="password">Mật khẩu</label><Input id="password" name="password" type="password" autocomplete="current-password" required /><Button type="submit">Đăng nhập</Button></form>
+        @if (Error)
+        {
+            <Alert Variant="AlertVariant.Destructive" role="alert">
+                <AlertTitle>Đăng nhập thất bại</AlertTitle>
+                <AlertDescription>Mật khẩu không đúng.</AlertDescription>
+            </Alert>
+        }
+        <form method="post" action="/auth/login">
+            <AntiforgeryToken /><label for="password">Mật khẩu</label><Input id="password" name="password"
+                                                                             type="password" autocomplete="current-password" required /><Button type="submit">Đăng nhập</Button>
+        </form>
     </CardContent>
 </Card>
 @code { [SupplyParameterFromQuery] public int? error { get; set; } private bool Error => error == 1; }
-<style>.login-card{max-width:28rem;margin:10vh auto}label{display:block;margin:.8rem 0 .3rem}.login-card form input,.login-card form button{width:100%;margin:.5rem 0}</style>
+<style>
+    .login-card {
+        max-width: 28rem;
+        margin: 10vh auto
+    }
+
+    label {
+        display: block;
+        margin: .8rem 0 .3rem
+    }
+
+    .login-card form input,
+    .login-card form button {
+        width: 100%;
+        margin: .5rem 0
+    }
+</style>

@@ -28,10 +28,6 @@
     <section class="site-card" aria-labelledby="site-@site.Id">
         <div class="card-head">
             <h2 id="site-@site.Id">@displayName</h2>
-            <div class="status-pills">
-                <span class="pill @site.IisState.ToLowerInvariant()">IIS: @site.IisState</span>
-                <span class="pill @site.Health.ToString().ToLowerInvariant()">Health: @site.Health</span>
-            </div>
         </div>
         @if (site.TargetKind == TargetKind.Application)
         {
@@ -39,8 +35,12 @@
         }
         <p><strong>Path:</strong> <code>@site.PhysicalPath</code></p>
         <p><strong>Bindings:</strong> @site.BindingsJson</p>
-        <p><strong>Last observation:</strong> @(site.LastObservedUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "never")</p>
-        <p role="status">@site.HealthReason</p>
+        <fieldset class="current-status">
+            <legend>Current status</legend>
+            <p><span class="pill @site.IisState.ToLowerInvariant()">IIS: @site.IisState</span> <span class="pill @site.Health.ToString().ToLowerInvariant()">Health: @site.Health</span></p>
+            <p><strong>Last observation:</strong> @(site.LastObservedUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "never")</p>
+            <p role="status">@site.HealthReason</p>
+        </fieldset>
         @if (!site.TargetAvailable)
         {
             <p role="status" class="muted">This target is unavailable in IIS. History is retained; rediscovery is required before deployment.</p>
@@ -52,24 +52,27 @@
         <label>Healthcheck endpoint <input value="@site.HealthEndpoint" @onchange="e => SaveEndpoint(site, e.Value?.ToString())" aria-describedby="endpoint-help-@site.Id" disabled="@(!site.TargetAvailable || ActiveDeployment(site))" /></label>
         @if (site.Operation == OperationPhase.RecoveryRequired)
         {
-            <button @onclick="() => AcknowledgeRecovery(site)" disabled="@(!site.TargetAvailable || RecoveryBlocked(site))">Acknowledge recovery evidence</button>
+            <Button @onclick="() => AcknowledgeRecovery(site)" disabled="@(!site.TargetAvailable || RecoveryBlocked(site))">Acknowledge recovery evidence</Button>
         }
         <div class="actions">
-            <fieldset class="restore-controls">
-                <legend>Restore specific version</legend>
-            <select @bind="_selected[site.Id]" aria-label="Version" disabled="@(!site.TargetAvailable || parentBusy)">
-                <option value="0">Select version</option>
-                @foreach (var archive in archives.Where(x => !x.Active))
-                {
-                    <option value="@archive.Id">@archive.CreatedUtc.ToLocalTime():g — @archive.OriginalName</option>
-                }
-            </select>
-            <button @onclick="() => Restore(site)" disabled="@(!site.TargetAvailable || parentBusy || Selected(site.Id) is null)">Restore</button>
-            </fieldset>
-            <label class="upload-zone" for="upload-@site.Id">
-                <strong>Drop ZIP here</strong> or <span class="picker-link">choose a ZIP file</span>
-                <InputFile id="@($"upload-{site.Id}")" OnChange="e => Upload(site, e)" accept=".zip,application/zip" aria-label="Upload ZIP" disabled="@(!site.TargetAvailable || parentBusy)" />
-            </label>
+            @if (site.TargetAvailable && !parentBusy)
+            {
+                <fieldset class="restore-controls">
+                    <legend>Restore specific version</legend>
+                    <select @bind="_selected[site.Id]" aria-label="Version">
+                        <option value="0">Select version</option>
+                        @foreach (var archive in archives)
+                        {
+                            <option value="@archive.Id">@archive.CreatedUtc.ToLocalTime():g — @archive.OriginalName</option>
+                        }
+                    </select>
+                    <Button @onclick="() => Restore(site)" disabled="@(Selected(site.Id) is null)">Restore</Button>
+                </fieldset>
+                <label class="upload-zone" for="upload-@site.Id">
+                    <strong>Drop ZIP here</strong> or <span class="picker-link">choose a ZIP file</span>
+                    <InputFile id="@($"upload-{site.Id}")" OnChange="e => Upload(site, e)" accept=".zip,application/zip" aria-label="Upload ZIP" />
+                </label>
+            }
         </div>
         @if (_busy.Contains(site.ParentSiteId.Length == 0 ? site.Id : site.ParentSiteId))
         {
@@ -92,7 +95,7 @@
         <section class="modal" role="dialog" aria-modal="true" aria-labelledby="wrapper-error-title">
             <h2 id="wrapper-error-title">Upload rejected</h2>
             <p>Bản build không được nằm trong thư mục của tệp nén</p>
-            <button @onclick="CloseWrapperModal">Close</button>
+            <Button @onclick="CloseWrapperModal">Close</Button>
         </section>
     </div>
 }
@@ -231,9 +234,13 @@
 .site-card h2 { margin: 0; font-size: 1rem; }
 .card-head, .actions { display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; margin-bottom: .45rem; }
 .card-head { flex-direction: column; align-items: flex-start; }
-.status-pills { display: flex; flex-wrap: wrap; gap: .4rem; }
-.restore-controls { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; min-width: 0; margin: 0; padding: .35rem; }
-.restore-controls legend { padding: 0 .2rem; }
+.actions { display: block; }
+.restore-controls, .current-status { min-width: 0; margin: 0; padding: .35rem; border: 1px solid #9ca3af; border-radius: .25rem; }
+.restore-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .4rem; width: 100%; }
+.restore-controls legend { grid-column: 1 / -1; }
+.restore-controls select { width: 100%; min-width: 0; }
+.restore-controls legend, .current-status legend { padding: 0 .3rem; }
+.current-status { margin: .45rem 0; }
 .pill { border-radius: 999px; padding: .15rem .45rem; font-size: .75rem; font-weight: 600; }
 .started, .healthy { background: #d1fae5; color: #065f46; }
 .degraded { background: #fef3c7; color: #92400e; }
