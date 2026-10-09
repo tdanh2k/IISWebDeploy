@@ -128,7 +128,7 @@
                 await _refreshLock.WaitAsync(token);
                 try
                 {
-                    var discovery = Sites.DiscoverWithStatus();
+                    var discovery = Sites.Snapshot;
                     var reservations = Store.Reservations();
                     await InvokeAsync(() => { _sites = discovery.Sites.ToList(); _discoveryStatus = discovery.Status; _discoveryFailure = discovery.FailureMessage; _reservations = reservations; PreserveState(); StateHasChanged(); });
                 }
@@ -144,9 +144,9 @@
         _refreshCancellation?.Dispose();
         _refreshLock.Dispose();
     }
-    private void Refresh()
+    private async void Refresh()
     {
-        var discovery = Sites.DiscoverWithStatus();
+        var discovery = await Sites.WaitForSnapshotAsync(CancellationToken.None);
         _discoveryStatus = discovery.Status;
         _discoveryFailure = discovery.FailureMessage;
         var discovered = discovery.Sites;

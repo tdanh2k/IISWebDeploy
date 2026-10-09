@@ -1,24 +1,45 @@
 @inherits LayoutComponentBase
+@implements IDisposable
 @inject NavigationManager Navigation
+@inject IISWebDeploy.Services.IisSiteService IisSites
 <AppLayout Class="app-shell">
     <Sidebar Collapsible="true" @bind-Collapsed="_sidebarCollapsed" AdditionalAttributes="@SidebarAttributes">
-        <SidebarHeader><span class="sidebar-brand">@(_sidebarCollapsed ? "DW" : "Deploy Web TCKH")</span></SidebarHeader>
+        <SidebarHeader><span class="sidebar-brand">@(_sidebarCollapsed ? "DW" : "Deploy Web TCKH")</span>
+        </SidebarHeader>
         <SidebarContent>
             <nav aria-label="Main navigation">
                 <SidebarMenu>
-                    <SidebarMenuItem Href="/" Active="@(Navigation.Uri.TrimEnd('/') == Navigation.BaseUri.TrimEnd('/'))" Title="Home">
-                        <Icon>⌂</Icon><ChildContent>Home</ChildContent>
+                    <SidebarMenuItem Href="/" Active="@(Navigation.Uri.TrimEnd('/') == Navigation.BaseUri.TrimEnd('/'))"
+                                     Title="Home">
+                        <Icon>⌂</Icon>
+                        <ChildContent>Home</ChildContent>
                     </SidebarMenuItem>
                 </SidebarMenu>
             </nav>
         </SidebarContent>
         <SidebarFooter>
-            <form method="post" action="/logout"><AntiforgeryToken /><button class="logout-button" type="submit">⇥ <span>Đăng xuất</span></button></form>
+            <form method="post" action="/logout">
+                <AntiforgeryToken /><button class="logout-button" type="submit">⇥ <span>Đăng xuất</span></button>
+            </form>
         </SidebarFooter>
     </Sidebar>
     <AppLayoutMain>
-        <AppLayoutHeader Class="app-header"><button type="button" class="sidebar-toggle" aria-label="Toggle navigation" aria-expanded="@(!_sidebarCollapsed)" @onclick="ToggleSidebar">☰</button><strong>Deploy Web TCKH</strong></AppLayoutHeader>
-        <AppLayoutBody Class="content"><article>@Body</article></AppLayoutBody>
+        <AppLayoutHeader Class="app-header"><button type="button" class="sidebar-toggle" aria-label="Toggle navigation"
+                                                        aria-expanded="@(!_sidebarCollapsed)" @onclick="ToggleSidebar">☰</button><strong>Deploy Web</strong>
+            <span class="pill @ServerHealth.CssClass" role="status" aria-label="@ServerHealth.Label: @ServerHealth.Detail" title="@ServerHealth.Detail">@ServerHealth.Label</span>
+        </AppLayoutHeader>
+        <AppLayoutBody Class="content">
+            <article>@Body</article>
+        </AppLayoutBody>
     </AppLayoutMain>
 </AppLayout>
-@code { private bool _sidebarCollapsed; private void ToggleSidebar() => _sidebarCollapsed = !_sidebarCollapsed; private Dictionary<string, object> SidebarAttributes => new() { ["aria-label"] = "Application navigation" }; }
+@code {
+    [Inject] private IISWebDeploy.Services.MonitoringService Monitoring { get; set; } = default!;
+    private bool _sidebarCollapsed;
+    private IISWebDeploy.Services.IisServerHealth ServerHealth => Monitoring.ServerHealth;
+    protected override void OnInitialized() => Monitoring.ServerHealthChanged += RefreshServerHealth;
+    private void RefreshServerHealth() => _ = InvokeAsync(StateHasChanged);
+    private void ToggleSidebar() => _sidebarCollapsed = !_sidebarCollapsed;
+    private Dictionary<string, object> SidebarAttributes => new() { ["aria-label"] = "Application navigation" };
+    public void Dispose() => Monitoring.ServerHealthChanged -= RefreshServerHealth;
+}

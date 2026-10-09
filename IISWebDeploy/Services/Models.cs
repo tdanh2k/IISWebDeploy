@@ -89,6 +89,7 @@ public sealed class SiteRecord
     public string? ActiveArchive { get; set; }
     public string? SnapshotPath { get; set; }
     public string? StagingPath { get; set; }
+    public SiteRecord Clone() => (SiteRecord)MemberwiseClone();
 }
 
 public sealed record PoolDeploymentPlan(string PoolName, IReadOnlyList<SiteRecord> Targets);

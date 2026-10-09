@@ -10,6 +10,28 @@ namespace IISWebDeploy.Services;
 
 public sealed class IisSiteService
 {
+    private readonly object _snapshotLock = new();
+    private IisDiscoveryResult _snapshot = new([], IisDiscoveryStatus.NoMatchingConfiguredSites);
+    public IisDiscoveryResult Snapshot { get { lock (_snapshotLock) return _snapshot with { Sites = _snapshot.Sites.Select(x => x.Clone()).ToArray() }; } }
+    private TaskCompletionSource _snapshotReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public event Action? SnapshotChanged;
+    public IisDiscoveryResult RefreshSnapshot()
+    {
+        var result = DiscoverWithStatus();
+        lock (_snapshotLock) _snapshot = result with { Sites = result.Sites.Select(x => x.Clone()).ToArray() };
+        _snapshotReady.TrySetResult();
+        SnapshotChanged?.Invoke();
+        return Snapshot;
+    }
+    public async Task<IisDiscoveryResult> WaitForSnapshotAsync(CancellationToken token)
+    {
+        await _snapshotReady.Task.WaitAsync(token);
+        return Snapshot;
+    }
+    public static IReadOnlyList<SiteRecord> ParentSiteStates(IEnumerable<SiteRecord> sites) => sites
+        .Where(x => x.TargetAvailable && (x.TargetKind != TargetKind.Application || ApplicationTargetIdentity.NormalizePath(x.ApplicationPath) == "/"))
+        .GroupBy(x => x.ParentSiteId.Length == 0 ? x.Id : x.ParentSiteId, StringComparer.OrdinalIgnoreCase)
+        .Select(x => x.First()).ToArray();
     private readonly DeploymentStore _store;
     private readonly DeploymentOptions _options;
     private readonly ILogger<IisSiteService> _logger;
@@ -79,7 +101,6 @@ public sealed class IisSiteService
         return false;
     }
 
-    public IReadOnlyList<SiteRecord> Discover() => DiscoverWithStatus().Sites;
 
     public IisDiscoveryResult DiscoverWithStatus()
     {
@@ -169,17 +190,53 @@ public sealed class HealthService
     private static Uri BuildUri(string binding, string applicationPath, string endpoint) { var parts = binding.Split(':', 3); var port = parts[1]; var host = parts.Length == 3 && !string.IsNullOrWhiteSpace(parts[2]) ? parts[2] : "localhost"; var route = ApplicationTargetIdentity.NormalizePath(applicationPath); var suffix = endpoint.StartsWith('/') ? endpoint : "/" + endpoint; return new Uri($"{(port == "443" ? "https" : "http")}://{host}:{port}{(route == "/" ? "" : route)}{suffix}"); }
 }
 
+public sealed record IisServerHealth(HealthTier Tier, string Detail)
+{
+    public string Label => Tier switch { HealthTier.Healthy => "IIS server: Running", HealthTier.Critical => "IIS server: Unhealthy", _ => "IIS server: Unknown" };
+    public string CssClass => Tier.ToString().ToLowerInvariant();
+    public static IisServerHealth Classify(bool isWindows, string? w3svc, string? was, string? failure = null)
+    {
+        if (!string.IsNullOrWhiteSpace(failure)) return new(HealthTier.Unknown, $"IIS service probe failed: {failure}");
+        if (!isWindows) return new(HealthTier.Unknown, "IIS server services can only be checked on Windows.");
+        if (w3svc is null || was is null) return new(HealthTier.Unknown, "Service status evidence is incomplete; both W3SVC and WAS are required.");
+        if (!string.Equals(w3svc, "Running", StringComparison.OrdinalIgnoreCase) || !string.Equals(was, "Running", StringComparison.OrdinalIgnoreCase))
+            return new(HealthTier.Critical, $"IIS server unhealthy: W3SVC is {w3svc}; WAS is {was}. Both must be Running.");
+        return new(HealthTier.Healthy, "W3SVC and WAS are both Running. Website/application health is monitored separately.");
+    }
+}
+
 public sealed class MonitoringService : BackgroundService
 {
     private readonly IisSiteService _sites; private readonly HealthService _health; private readonly DeploymentStore _store; private readonly DeploymentOptions _options;
+    private IisServerHealth _serverHealth = new(HealthTier.Unknown, "Waiting for the first monitoring cycle.");
+    public IisServerHealth ServerHealth => Volatile.Read(ref _serverHealth);
+    public event Action? ServerHealthChanged;
     public MonitoringService(IisSiteService sites, HealthService health, DeploymentStore store, IOptions<DeploymentOptions> options) { _sites = sites; _health = health; _store = store; _options = options.Value; }
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken) { while (!stoppingToken.IsCancellationRequested) { foreach (var site in _sites.Discover()) { var o = await _health.EvaluateAsync(site, stoppingToken); _store.UpdateHealth(site.Id, o); _store.SaveObservation(site.Id, o); } await Task.Delay(TimeSpan.FromSeconds(Math.Max(1, _options.MonitorIntervalSeconds)), stoppingToken); } }
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken) { while (!stoppingToken.IsCancellationRequested) { var snapshot = _sites.RefreshSnapshot(); ProbeServerHealth(); ServerHealthChanged?.Invoke(); foreach (var site in snapshot.Sites) { var o = await _health.EvaluateAsync(site, stoppingToken); _store.UpdateHealth(site.Id, o); _store.SaveObservation(site.Id, o); } await Task.Delay(TimeSpan.FromSeconds(Math.Max(1, _options.MonitorIntervalSeconds)), stoppingToken); } }
+    private void ProbeServerHealth()
+    {
+        if (!OperatingSystem.IsWindows()) { Volatile.Write(ref _serverHealth, IisServerHealth.Classify(false, null, null)); return; }
+        try { Volatile.Write(ref _serverHealth, IisServerHealth.Classify(true, ProbeService("W3SVC"), ProbeService("WAS"))); }
+        catch (Exception ex) { Volatile.Write(ref _serverHealth, IisServerHealth.Classify(true, null, null, ex.Message)); }
+    }
+    private static string ProbeService(string name)
+    {
+        using var process = Process.Start(new ProcessStartInfo("sc.exe", $"query {name}") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true }) ?? throw new InvalidOperationException($"Could not start service query for {name}.");
+        var output = process.StandardOutput.ReadToEnd(); var error = process.StandardError.ReadToEnd(); process.WaitForExit();
+        if (process.ExitCode != 0) throw new InvalidOperationException(string.IsNullOrWhiteSpace(error) ? $"Service query for {name} exited with {process.ExitCode}." : error.Trim());
+        var match = System.Text.RegularExpressions.Regex.Match(output, @"STATE\s*:\s*\d+\s+(\w+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (!match.Success) throw new InvalidOperationException($"Service query for {name} returned no state evidence.");
+        return match.Groups[1].Value;
+    }
 }
 
 public static class HealthServiceChecks
 {
     public static void Run()
     {
+        if (IisServerHealth.Classify(true, "Running", "Running").Tier != HealthTier.Healthy || IisServerHealth.Classify(true, "Stopped", "Running").Tier != HealthTier.Critical || IisServerHealth.Classify(true, "Running", "Stopped").Tier != HealthTier.Critical || IisServerHealth.Classify(true, null, null, "access denied").Tier != HealthTier.Unknown || IisServerHealth.Classify(true, null, "Running").Tier != HealthTier.Unknown || IisServerHealth.Classify(false, null, null).Tier != HealthTier.Unknown) throw new InvalidOperationException("IIS server service health classification check failed.");
+        var states = IisSiteService.ParentSiteStates([new SiteRecord { Id = "7", ParentSiteId = "7", TargetKind = TargetKind.Root }, new SiteRecord { Id = "app:7:/api", ParentSiteId = "7", ApplicationPath = "/api", TargetKind = TargetKind.Application }, new SiteRecord { Id = "9", ParentSiteId = "9", TargetKind = TargetKind.Root }]);
+        if (states.Count != 2 || states.Any(x => x.TargetKind == TargetKind.Application)) throw new InvalidOperationException("Central IIS parent-site state deduplication check failed.");
         var observation = new HealthObservation { Overall = HealthTier.Unknown };
         if (observation.Overall == HealthTier.Healthy) throw new InvalidOperationException("Unknown evidence was classified as healthy.");
         if (!IisSiteService.IsExpectedDiscoveryFailure(new UnauthorizedAccessException())) throw new InvalidOperationException("IIS permission failure is not classified as recoverable.");

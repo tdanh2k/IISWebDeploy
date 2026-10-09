@@ -1,5 +1,6 @@
 ::deep(.app-shell) { min-height: 100vh; background: hsl(var(--background)); color: hsl(var(--foreground)); }
 ::deep(.app-header) { display: flex; align-items: center; gap: 1rem; min-height: 3.5rem; padding: .75rem 1.25rem; font-weight: 600; }
+::deep(.navbar-iis-states) { display: flex; flex-wrap: wrap; gap: .4rem; min-width: 0; margin-left: auto; }
 .sidebar-toggle { border: 0; background: transparent; color: inherit; padding: .4rem .6rem; cursor: pointer; }
 .sidebar-toggle:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }
 ::deep(.content) { width: 100%; padding: 1.5rem; }
