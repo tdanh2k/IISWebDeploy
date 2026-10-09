@@ -7,17 +7,21 @@ using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.Extensions.Hosting.WindowsServices;
 
 if (args.Contains("--self-check", StringComparer.Ordinal)) { SQLitePCL.Batteries_V2.Init(); DeploymentSafetyChecks.Run(); HealthServiceChecks.Run(); DeploymentStoreChecks.Run(); LoginChecks.Run(); HomeRenderChecks.Run(); FileLoggerChecks.Run(); return; }
 SQLitePCL.Batteries_V2.Init();
-var builder = WebApplication.CreateBuilder(args);
+var isWindowsService = WindowsServiceHelpers.IsWindowsService();
+// Set this before host creation so file logging and storage use the deployed app directory.
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = args, ContentRootPath = isWindowsService ? AppContext.BaseDirectory : null });
+if (isWindowsService) builder.Host.UseWindowsService();
 builder.Logging.AddConfiguredFileLogger(builder.Configuration, builder.Environment);
 builder.Services.AddRazorComponents().AddInteractiveServerComponents();
 builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme).AddCookie(options => { options.Cookie.Name = "iisdeploy.auth"; options.Cookie.HttpOnly = true; options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest; options.Cookie.SameSite = SameSiteMode.Strict; options.LoginPath = "/login"; options.AccessDeniedPath = "/login"; });
 builder.Services.AddAuthorization(); builder.Services.AddAntiforgery(options => { options.Cookie.HttpOnly = true; options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest; options.Cookie.SameSite = SameSiteMode.Strict; });
 builder.Services.Configure<DeploymentOptions>(builder.Configuration.GetSection("Deployment"));
-builder.Services.AddSingleton<DeploymentStore>(); builder.Services.AddSingleton<IisSiteService>(); builder.Services.AddSingleton<HealthService>(); builder.Services.AddSingleton<DeploymentService>(); builder.Services.AddHostedService<MonitoringService>(); builder.Services.AddHostedService<DeploymentWorker>();
+builder.Services.AddSingleton<DeploymentStore>(); builder.Services.AddSingleton<IisSiteService>(); builder.Services.AddSingleton<HealthService>(); builder.Services.AddSingleton<MonitoringService>(); builder.Services.AddHostedService(sp => sp.GetRequiredService<MonitoringService>()); builder.Services.AddSingleton<DeploymentService>(); builder.Services.AddHostedService<DeploymentWorker>();
 var configuredMax = builder.Configuration.GetValue<long?>("Deployment:MaxUploadBytes") ?? 1024L * 1024 * 1024;
 builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = configuredMax);
 var app = builder.Build();
