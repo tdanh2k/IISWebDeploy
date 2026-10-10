@@ -37,7 +37,7 @@
         <p><strong>Bindings:</strong> @site.BindingsJson</p>
         <fieldset class="current-status">
             <legend>Current status</legend>
-            <p><span class="pill @site.IisState.ToLowerInvariant()">IIS: @site.IisState</span> <span class="pill @site.Health.ToString().ToLowerInvariant()">Health: @site.Health</span></p>
+            <p><span class="pill @StateCss(site.IisState)">IIS: @site.IisState</span> <span class="pill @site.Health.ToString().ToLowerInvariant()">Health: @site.Health</span></p>
             <p><strong>Last observation:</strong> @(site.LastObservedUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "never")</p>
             <p role="status">@site.HealthReason</p>
         </fieldset>
@@ -174,6 +174,7 @@
         IisDiscoveryStatus.DiscoveryFailure => $"IIS discovery failed: {_discoveryFailure ?? "the IIS configuration could not be read"}",
         _ => "No matching IIS sites were discovered."
     };
+    private static string StateCss(string state) => state.Equals("Started", StringComparison.OrdinalIgnoreCase) ? "started" : state.Equals("Stopped", StringComparison.OrdinalIgnoreCase) ? "critical" : "unknown";
     private bool Busy(string id) => _busy.Contains(id) || _reservations.Any(x => string.Equals(x.ParentSiteId, id, StringComparison.OrdinalIgnoreCase));
     private static bool ActiveDeployment(SiteRecord site) => site.Operation is OperationPhase.Staging or OperationPhase.Snapshot or OperationPhase.Quiescing or OperationPhase.Deploying or OperationPhase.Verifying or OperationPhase.Restoring;
     private bool RecoveryBlocked(SiteRecord site) => _reservations.Any(x => string.Equals(x.ParentSiteId, site.ParentSiteId.Length == 0 ? site.Id : site.ParentSiteId, StringComparison.OrdinalIgnoreCase) && !(x.TargetId == site.Id && x.Status == "RecoveryRequired"));

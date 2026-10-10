@@ -199,13 +199,15 @@ public static class SiteDiscoveryFilter
         (!string.IsNullOrWhiteSpace(options.SelfSiteName) && string.Equals(name, options.SelfSiteName, StringComparison.OrdinalIgnoreCase)) ||
         PathsEqual(physicalPath, string.IsNullOrWhiteSpace(options.SelfPhysicalPath) ? applicationRoot : options.SelfPhysicalPath!);
 
-    public static bool IsIncluded(string name, string physicalPath, DeploymentOptions options, string applicationRoot)
+    public static bool IsIncludedByPrefix(string name, DeploymentOptions options)
     {
-        var blacklist = options.BlacklistPrefixes ?? [];
         if (!HasConfiguredPrefix(name, options)) return false;
-        if (blacklist.Any(prefix => name.StartsWith(prefix ?? "", StringComparison.OrdinalIgnoreCase))) return false;
-        return !IsDashboardSite(name, physicalPath, options, applicationRoot);
+        var blacklist = options.BlacklistPrefixes ?? [];
+        return !blacklist.Any(prefix => name.StartsWith(prefix ?? "", StringComparison.OrdinalIgnoreCase));
     }
+
+    public static bool IsIncluded(string name, string physicalPath, DeploymentOptions options, string applicationRoot) =>
+        IsIncludedByPrefix(name, options) && !IsDashboardSite(name, physicalPath, options, applicationRoot);
 
     private static bool PathsEqual(string left, string right)
     {
