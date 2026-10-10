@@ -115,10 +115,12 @@ public sealed class IisSiteService
             var discovered = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var site in manager.Sites)
             {
-                var root = site.Applications["/"]?.VirtualDirectories["/"]?.PhysicalPath ?? "";
                 if (SiteDiscoveryFilter.HasConfiguredPrefix(site.Name, _options)) configuredPrefixMatches++;
-                if (SiteDiscoveryFilter.IsDashboardSite(site.Name, root, _options, _applicationRoot)) dashboardMatches++;
-                if (!SiteDiscoveryFilter.IsIncluded(site.Name, root, _options, _applicationRoot)) continue;
+                if (!SiteDiscoveryFilter.IsIncludedByPrefix(site.Name, _options)) continue;
+                var root = site.Applications["/"]?.VirtualDirectories["/"]?.PhysicalPath ?? "";
+                var isDashboard = SiteDiscoveryFilter.IsDashboardSite(site.Name, root, _options, _applicationRoot);
+                if (isDashboard) dashboardMatches++;
+                if (isDashboard) continue;
                 var bindings = JsonSerializer.Serialize(site.Bindings.Select(x => x.BindingInformation), JsonDefaults.Web);
                 foreach (var application in site.Applications)
                 {
@@ -243,7 +245,7 @@ public static class HealthServiceChecks
         if (IisSiteService.IsExpectedDiscoveryFailure(new InvalidOperationException())) throw new InvalidOperationException("Unexpected discovery failure was classified as recoverable.");
         if (new IisDiscoveryResult([], IisDiscoveryStatus.NonWindowsPlatform).Status != IisDiscoveryStatus.NonWindowsPlatform || new IisDiscoveryResult([], IisDiscoveryStatus.DiscoveryFailure, "failure").FailureMessage != "failure") throw new InvalidOperationException("IIS discovery result status check failed.");
         var options = new DeploymentOptions { WhitelistPrefixes = ["App-"], BlacklistPrefixes = ["App-Blocked"], SelfSiteName = "App-Self" };
-        if (!SiteDiscoveryFilter.IsIncluded("App-One", "/sites/one", options, "/dashboard") || SiteDiscoveryFilter.IsIncluded("Other", "/sites/other", options, "/dashboard") || SiteDiscoveryFilter.IsIncluded("APP-BLOCKED-1", "/sites/blocked", options, "/dashboard") || SiteDiscoveryFilter.IsIncluded("App-Self", "/sites/self", options, "/dashboard")) throw new InvalidOperationException("IIS site discovery filter check failed.");
+        if (!SiteDiscoveryFilter.IsIncluded("App-One", "/sites/one", options, "/dashboard") || SiteDiscoveryFilter.IsIncluded("Other", "/sites/other", options, "/dashboard") || SiteDiscoveryFilter.IsIncluded("APP-BLOCKED-1", "/sites/blocked", options, "/dashboard") || SiteDiscoveryFilter.IsIncluded("App-Self", "/sites/self", options, "/dashboard") || SiteDiscoveryFilter.IsIncluded("App-Blocked", "/sites/blocked", new DeploymentOptions { WhitelistPrefixes = ["App-"], BlacklistPrefixes = ["App-Blocked"] }, "/dashboard") || SiteDiscoveryFilter.IsIncludedByPrefix("App-Blocked", new DeploymentOptions { BlacklistPrefixes = ["App-Blocked"] }) || !SiteDiscoveryFilter.IsIncludedByPrefix("Anything", new DeploymentOptions())) throw new InvalidOperationException("IIS site discovery filter check failed.");
         if (!SiteDiscoveryFilter.IsIncluded("Anything", "/sites/anything", new DeploymentOptions(), "/dashboard") || SiteDiscoveryFilter.IsIncluded("App", "/dashboard/site", new DeploymentOptions { SelfPhysicalPath = "/dashboard/site" }, "/dashboard")) throw new InvalidOperationException("IIS site discovery empty whitelist or self-path check failed.");
         if (ApplicationTargetIdentity.NormalizePath("admin/") != "/admin" || ApplicationTargetIdentity.Id("7", "/admin/") != "app:7:/admin" || ApplicationTargetIdentity.Id("7", "/") != "7" || ApplicationTargetIdentity.DisplayName("Main", "/admin") != "Main admin" || ApplicationTargetIdentity.Id("7", "/admin") != ApplicationTargetIdentity.Id("7", "admin/") || ApplicationTargetIdentity.DisplayName("Main", "/admin/") != "Main admin") throw new InvalidOperationException("Application target identity check failed.");
         var storageToken = ApplicationTargetIdentity.StorageToken("app:7:/admin");
