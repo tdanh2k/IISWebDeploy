@@ -25,7 +25,13 @@
         ? ApplicationTargetIdentity.DisplayNameForApplication(parent?.Name, site.Name, site.ApplicationPath)
         : site.Name;
     var parentBusy = Busy(parentId);
-    <section class="site-card" aria-labelledby="site-@site.Id">
+    <section class="site-card @(DropActive(site.Id) ? "drop-active" : "")" aria-labelledby="site-@site.Id"
+             @ondragenter="e => DragEnter(site, e)" @ondragover="e => DragOver(site, e)"
+             @ondragleave="e => DragLeave(site, e)" @ondrop="e => Drop(site, e)" @ondragover:preventDefault @ondrop:preventDefault @ondragenter:stopPropagation @ondragleave:stopPropagation>
+        @if (DropActive(site.Id))
+        {
+            <div class="drop-overlay" aria-hidden="true">Drop here to deploy</div>
+        }
         <div class="card-head">
             <h2 id="site-@site.Id">@displayName</h2>
         </div>
@@ -111,6 +117,7 @@
     private IReadOnlyList<ParentReservation> _reservations = [];
     private PeriodicTimer? _reservationTimer;
     private CancellationTokenSource? _refreshCancellation;
+    private readonly Dictionary<string, int> _dropDepth = new(StringComparer.OrdinalIgnoreCase);
     protected override void OnInitialized() => Refresh();
     protected override void OnAfterRender(bool firstRender)
     {
@@ -184,6 +191,38 @@
         return reservation is null ? "local operation" : $"{reservation.Operation} on target {reservation.TargetId} ({reservation.Status})";
     }
     private ArchiveRecord? Selected(string id) => _selected.GetValueOrDefault(id) is var value && value > 0 ? Store.Archive(value) : null;
+    private bool DropActive(string id) => _dropDepth.GetValueOrDefault(id) > 0;
+    private void DragEnter(SiteRecord site, DragEventArgs e)
+    {
+        if (!CanDrop(site) || !e.DataTransfer!.Types.Contains("Files")) return;
+        _dropDepth[site.Id] = _dropDepth.GetValueOrDefault(site.Id) + 1;
+        _ = InvokeAsync(StateHasChanged);
+    }
+    private void DragOver(SiteRecord site, DragEventArgs e)
+    {
+        if (CanDrop(site) && e.DataTransfer!.Types.Contains("Files")) e.DataTransfer.DropEffect = "copy";
+    }
+    private void DragLeave(SiteRecord site, DragEventArgs e)
+    {
+        if (!_dropDepth.TryGetValue(site.Id, out var depth)) return;
+        if (depth <= 1) _dropDepth.Remove(site.Id);
+        else _dropDepth[site.Id] = depth - 1;
+        _ = InvokeAsync(StateHasChanged);
+    }
+    private async Task Drop(SiteRecord site, DragEventArgs e)
+    {
+        try
+        {
+            if (!CanDrop(site) || !e.DataTransfer!.Types.Contains("Files")) return;
+            await JS.InvokeVoidAsync("deploymentDrop", $"upload-{site.Id}", e.DataTransfer.Files);
+        }
+        finally { _dropDepth.Remove(site.Id); await InvokeAsync(StateHasChanged); }
+    }
+    private bool CanDrop(SiteRecord site)
+    {
+        var parentId = site.ParentSiteId.Length == 0 ? site.Id : site.ParentSiteId;
+        return site.TargetAvailable && !Busy(parentId);
+    }
     private void SaveEndpoint(SiteRecord site, string? value)
     {
         try { Sites.SaveEndpoint(site, value ?? "/"); _messages[site.Id] = "Saved."; }
@@ -226,11 +265,23 @@
     private void CloseWrapperModal() => _wrapperModal = false;
     [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
     [Inject] private IJSRuntime JS { get; set; } = default!;
-    private ValueTask<bool> JSConfirm() => JS.InvokeAsync<bool>("confirm", "Restore this version? The current deployment will be replaced.");
+    private ValueTask<bool> JSConfirm() => JS.InvokeAsync<bool>("confirm", "Restore this version? The current deployment will be discarded.");
 }
+<script>
+    window.deploymentDrop = (id, droppedFiles) => {
+        const input = document.getElementById(id);
+        if (!input || !droppedFiles?.length) return;
+        const files = new DataTransfer();
+        for (const file of droppedFiles) files.items.add(file);
+        input.files = files.files;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+</script>
 <style>
 .site-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; padding: 1rem; min-width: 0; }
-.site-card { min-width: 0; border: 1px solid #d3d7dc; border-radius: .5rem; padding: .7rem; font-size: .88rem; }
+.site-card { position: relative; min-width: 0; border: 1px solid #d3d7dc; border-radius: .5rem; padding: .7rem; font-size: .88rem; }
+.site-card.drop-active { outline: 2px solid #1d4ed8; outline-offset: -2px; }
+.drop-overlay { position: absolute; inset: 0; z-index: 2; display: grid; place-items: center; border-radius: inherit; background: rgb(239 246 255 / .92); color: #1d4ed8; font-size: 1.2rem; font-weight: 600; pointer-events: none; }
 .site-card p { margin: .35rem 0; overflow-wrap: anywhere; }
 .site-card h2 { margin: 0; font-size: 1rem; }
 .card-head, .actions { display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; margin-bottom: .45rem; }
