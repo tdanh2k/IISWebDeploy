@@ -8,43 +8,232 @@ namespace IISWebDeploy.Services;
 public sealed class DeploymentService
 {
     private readonly DeploymentStore _store; private readonly DeploymentOptions _options; private readonly HealthService _health; private readonly IisSiteService _iis; private readonly ILogger<DeploymentService> _logger; private readonly ConcurrentDictionary<string, SemaphoreSlim> _locks = new(StringComparer.OrdinalIgnoreCase); private readonly string _root;
-    public DeploymentService(DeploymentStore store, IOptions<DeploymentOptions> options, IHostEnvironment env, HealthService health, IisSiteService iis, ILogger<DeploymentService> logger) { _store = store; _options = options.Value; _root = env.ContentRootPath; _health = health; _iis = iis; _logger = logger; }
+    public DeploymentService(DeploymentStore store, IOptions<DeploymentOptions> options, IHostEnvironment env, HealthService health, IisSiteService iis, ILogger<DeploymentService> logger)
+    {
+        _store = store;
+        _options = options.Value;
+        _root = env.ContentRootPath;
+        _health = health;
+        _iis = iis;
+        _logger = logger;
+    }
     public async Task<(bool Success, string Message)> DeployAsync(SiteRecord site, Stream upload, string originalName, CancellationToken token)
     {
-        var operation = "deploy"; var archiveRoot = PathSafety.ResolvePrivate(_root, _options.ArchivePath); Directory.CreateDirectory(archiveRoot); var storageToken = ApplicationTargetIdentity.StorageToken(site.Id); var archive = Path.Combine(archiveRoot, $"{storageToken}_{DateTime.UtcNow:yyyyMMddHHmmss}_{Guid.NewGuid():N}.zip");
-        try { LogPhase(site, null, operation, "upload-saving", $"destination={Path.GetFullPath(archive)}"); await SaveUpload(upload, archive, token, site.Id, null, operation); LogPhase(site, null, operation, "upload-saved", $"path={Path.GetFullPath(archive)}"); if (!_store.TryEnqueue(new DeploymentJob { SiteId = site.Id, ArchivePath = archive, OriginalName = originalName })) { await DeleteTemporaryUploadAsync(archive, site.Id, null, operation); LogPhase(site, null, operation, "enqueue-rejected", "another deployment operation is incomplete"); return (false, "Another deployment operation is incomplete."); } LogPhase(site, null, operation, "upload-queued", $"path={Path.GetFullPath(archive)}"); return (true, "Upload staged; deployment continues on the server."); }
+        var operation = "deploy";
+        var archiveRoot = PathSafety.ResolvePrivate(_root, _options.ArchivePath);
+        Directory.CreateDirectory(archiveRoot);
+        var storageToken = ApplicationTargetIdentity.StorageToken(site.Id);
+        var archive = Path.Combine(archiveRoot, $"{storageToken}_{DateTime.UtcNow:yyyyMMddHHmmss}_{Guid.NewGuid():N}.zip");
+        try
+        {
+            LogPhase(site, null, operation, "upload-saving", $"destination={Path.GetFullPath(archive)}");
+            await SaveUpload(upload, archive, token, site.Id, null, operation);
+            LogPhase(site, null, operation, "upload-saved", $"path={Path.GetFullPath(archive)}");
+            if (!_store.TryEnqueue(new DeploymentJob { SiteId = site.Id, ArchivePath = archive, OriginalName = originalName }))
+            {
+                await DeleteTemporaryUploadAsync(archive, site.Id, null, operation);
+                LogPhase(site, null, operation, "enqueue-rejected", "another deployment operation is incomplete");
+                return (false, "Another deployment operation is incomplete.");
+            }
+            LogPhase(site, null, operation, "upload-queued", $"path={Path.GetFullPath(archive)}");
+            return (true, "Upload staged; deployment continues on the server.");
+        }
         catch (Exception ex) { if (!File.Exists(archive)) LogFailure(site, null, operation, "upload-or-enqueue", "upload stream", archive, ex); if (!_store.HasPendingArchive(archive)) await DeleteTemporaryUploadAsync(archive, site.Id, null, operation); throw; }
     }
     public Task<(bool Success, string Message)> RestoreAsync(SiteRecord site, ArchiveRecord archive, CancellationToken token)
     {
-        const string operation = "restore"; if (archive.SiteId != site.Id || !archive.Successful) return Task.FromResult((false, "The selected archive cannot be restored.")); if (!File.Exists(archive.Path)) return Task.FromResult((false, "The selected archive is unavailable."));
-        try { var queued = _store.TryEnqueue(new DeploymentJob { SiteId = site.Id, ArchivePath = archive.Path, OriginalName = archive.OriginalName, IsRestore = true }); LogPhase(site, null, operation, queued ? "restore-queued" : "enqueue-rejected", $"source={Path.GetFullPath(archive.Path)}"); return Task.FromResult(queued ? (true, "Restore queued; deployment continues on the server.") : (false, "Another deployment operation is incomplete.")); }
+        const string operation = "restore";
+        if (archive.SiteId != site.Id || !archive.Successful)
+            return Task.FromResult((false, "The selected archive cannot be restored."));
+        if (!File.Exists(archive.Path))
+            return Task.FromResult((false, "The selected archive is unavailable."));
+        try
+        {
+            var queued = _store.TryEnqueue(new DeploymentJob { SiteId = site.Id, ArchivePath = archive.Path, OriginalName = archive.OriginalName, IsRestore = true });
+            LogPhase(site, null, operation, queued ? "restore-queued" : "enqueue-rejected", $"source={Path.GetFullPath(archive.Path)}");
+            return Task.FromResult(queued ? (true, "Restore queued; deployment continues on the server.") : (false, "Another deployment operation is incomplete."));
+        }
         catch (Exception ex) { LogFailure(site, null, operation, "enqueue", archive.Path, "deployment queue", ex); throw; }
     }
     public async Task ExecuteAsync(DeploymentJob job, CancellationToken token)
     {
-        var operation = job.IsRestore ? "restore" : "deploy"; SiteRecord? site = null;
-        try { site = _store.Sites().Single(x => x.Id == job.SiteId); LogPhase(site, job.Id, operation, "job-started", $"archive={Path.GetFullPath(job.ArchivePath)}"); await using var stream = OpenArchive(job.ArchivePath, site, job.Id, operation); var result = await RunAsync(site, stream, job.OriginalName, job.IsRestore ? job.ArchivePath : null, token, job.Id, operation); _store.CompleteJob(job.Id, result.Success); LogPhase(site, job.Id, operation, result.Success ? "job-succeeded" : "job-failed", result.Message); }
+        var operation = job.IsRestore ? "restore" : "deploy";
+        SiteRecord? site = null;
+        try
+        {
+            site = _store.Sites().Single(x => x.Id == job.SiteId);
+            LogPhase(site, job.Id, operation, "job-started", $"archive={Path.GetFullPath(job.ArchivePath)}");
+            await using var stream = OpenArchive(job.ArchivePath, site, job.Id, operation);
+            var result = await RunAsync(site, stream, job.OriginalName, job.IsRestore ? job.ArchivePath : null, token, job.Id, operation);
+            _store.CompleteJob(job.Id, result.Success);
+            LogPhase(site, job.Id, operation, result.Success ? "job-succeeded" : "job-failed", result.Message);
+        }
         catch (Exception ex) { _logger.LogError(ex, "Deployment job {JobId} failed before or outside the deployment lifecycle for site {SiteId}; operation {Operation}", job.Id, job.SiteId, operation); _store.CompleteJob(job.Id, false); throw; }
         finally { if (!job.IsRestore && !_store.HasPendingArchive(job.ArchivePath)) await DeleteTemporaryUploadAsync(job.ArchivePath, job.SiteId, job.Id, operation); }
     }
-    private FileStream OpenArchive(string path, SiteRecord site, long jobId, string operation) { try { return File.OpenRead(path); } catch (Exception ex) { LogFailure(site, jobId, operation, "archive-open", path, "archive stream", ex); throw; } }
-    public void ReconcileIncomplete() { _store.MarkRunningJobsForRecovery(); foreach (var site in _store.Sites().Where(x => x.Operation is not (OperationPhase.None or OperationPhase.Completed or OperationPhase.Failed or OperationPhase.RecoveryRequired))) { site.Operation = OperationPhase.RecoveryRequired; site.HealthReason = "The process restarted during deployment. Manual recovery is required; no automatic file mutation was attempted."; _store.SetRecoveryIfActive(site.Id); } }
-    private async Task<(bool Success, string Message)> RunAsync(SiteRecord site, Stream upload, string originalName, string? existingArchive, CancellationToken token, long jobId, string operation)
+    private FileStream OpenArchive(string path, SiteRecord site, long jobId, string operation)
     {
-        if (!OperatingSystem.IsWindows()) return (false, "Deployment is disabled: IIS operations are Windows-only."); if (!Path.IsPathRooted(site.PhysicalPath) || !Directory.Exists(site.PhysicalPath)) return (false, "The IIS site path is unavailable."); if (!originalName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)) return (false, "Only ZIP archives are accepted."); if (_options.RetentionCount < 1 || _options.GateSuccesses < 1 || _options.GateWindowSeconds < 1 || _options.MaxUploadBytes < 1 || _options.MaxExpandedBytes < 1) return (false, "Unsafe deployment configuration.");
-        if (!site.TargetAvailable) return (false, "The IIS application target is unavailable; rediscover it before deployment.");
-        var sitePath = Path.GetFullPath(site.PhysicalPath); var archiveRoot = PathSafety.ResolvePrivate(_root, _options.ArchivePath); Directory.CreateDirectory(archiveRoot); if (PathSafety.IsWithin(sitePath, archiveRoot) || PathSafety.IsWithin(archiveRoot, sitePath)) return (false, "The target and private archive paths must not overlap."); var gate = _locks.GetOrAdd(jobId > 0 ? _store.Site(site.Id)?.ParentSiteId ?? site.ParentSiteId : site.ParentSiteId.Length == 0 ? site.Id : site.ParentSiteId, _ => new SemaphoreSlim(1, 1)); await gate.WaitAsync(token); string? archive = existingArchive, staging = null, snapshot = null; var backup = (string?)null; var backupRecordAdded = false; var poolPlan = (PoolDeploymentPlan?)null; var poolStopped = false; var operationId = $"{DateTime.UtcNow:yyyyMMddHHmmss}_{Guid.NewGuid():N}"; var wasStarted = string.Equals(site.IisState, "Started", StringComparison.OrdinalIgnoreCase); var filesMutationStarted = false; var backupValidation = (string?)null;
         try
         {
-            if (site.Operation is not (OperationPhase.None or OperationPhase.Staging or OperationPhase.Completed or OperationPhase.Failed)) return (false, "Another deployment operation is incomplete."); _store.ReconcileActive(site.Id); var storageToken = ApplicationTargetIdentity.StorageToken(site.Id); staging = Path.Combine(archiveRoot, $".staging_{storageToken}_{operationId}"); archive = existingArchive ?? Path.Combine(archiveRoot, $"{storageToken}_{operationId}.zip"); if (existingArchive is null) { LogPhase(site, jobId, operation, "upload-saving", $"destination={Path.GetFullPath(archive)}"); await SaveUpload(upload, archive, token, site.Id, jobId, operation); LogPhase(site, jobId, operation, "upload-saved", $"path={Path.GetFullPath(archive)}"); }
-            RevalidateTarget(site); var resolvedPool = _iis.ResolveDeploymentPool(site); poolPlan = resolvedPool; LogPhase(site, jobId, operation, "validation-extraction-started", $"source={Path.GetFullPath(archive)} destination={Path.GetFullPath(staging)}"); ValidateAndExtract(archive, staging, site, jobId, operation); LogPhase(site, jobId, operation, "validation-extraction-completed", $"destination={Path.GetFullPath(staging)}"); snapshot = Path.Combine(archiveRoot, $".recovery_{storageToken}_{operationId}"); SetPhase(site, OperationPhase.Staging, staging, snapshot); LogPhase(site, jobId, operation, "quiescence-started", $"stopping shared pool {resolvedPool.PoolName} once"); SetPhase(site, OperationPhase.Quiescing, staging, snapshot); poolStopped = true; if (!await _iis.QuiesceForDeploymentAsync(resolvedPool, token)) { poolStopped = true; throw new InvalidOperationException("Unable to confirm IIS application-pool shutdown; live files were not changed."); } LogPhase(site, jobId, operation, "quiescence-completed", "shared pool and worker processes stopped"); RevalidateTarget(site); _iis.ResolveDeploymentPool(site); SetPhase(site, OperationPhase.Snapshot, staging, snapshot); LogPhase(site, jobId, operation, "snapshot-started", $"source={sitePath} destination={Path.GetFullPath(snapshot)}"); CopyTree(sitePath, snapshot, site, jobId, operation); LogPhase(site, jobId, operation, "snapshot-completed", $"destination={Path.GetFullPath(snapshot)}"); backup = Path.Combine(archiveRoot, $"{storageToken}_live_{operationId}.zip"); LogPhase(site, jobId, operation, "backup-persist-started", $"source={Path.GetFullPath(snapshot)} destination={Path.GetFullPath(backup)}"); await CreateBackupArchive(snapshot, backup, token); backupValidation = Path.Combine(archiveRoot, $".backup-validate_{storageToken}_{operationId}"); ValidateAndExtract(backup, backupValidation, site, jobId, operation); TryDelete(backupValidation); backupValidation = null; _store.AddArchive(new ArchiveRecord { SiteId = site.Id, Path = backup, OriginalName = $"Live site backup — {DateTimeOffset.UtcNow:yyyy-MM-dd HH:mm:ss} UTC.zip", CreatedUtc = DateTimeOffset.UtcNow, Successful = true, Active = false }); backupRecordAdded = true; LogPhase(site, jobId, operation, "backup-persist-completed", $"path={Path.GetFullPath(backup)}"); RevalidateTarget(site); _iis.ResolveDeploymentPool(site); SetPhase(site, OperationPhase.Deploying, staging, snapshot); filesMutationStarted = true; LogPhase(site, jobId, operation, "live-file-replace-started", $"source={Path.GetFullPath(staging)} destination={sitePath}"); ReplaceSite(sitePath, staging, _options.PreservedFolders, site, jobId, operation); LogPhase(site, jobId, operation, "live-file-replace-completed", $"destination={sitePath}"); SetPhase(site, OperationPhase.Verifying, staging, snapshot); LogPhase(site, jobId, operation, "start-health-gate-started", "restarting shared application pool and checking every application using it"); if (!await StartAndGateAsync(site, resolvedPool, token, jobId, operation)) throw new InvalidOperationException("Health gate failed after deployment.");
-            site.ActiveArchive = null; site.Operation = OperationPhase.Completed; site.SnapshotPath = null; site.StagingPath = null; site.HealthReason = "Deployment completed."; _store.UpdateOperation(site); _store.Retain(site.Id, _options.RetentionCount, jobId); return (true, "Deployment completed successfully.");
+            return File.OpenRead(path);
+        }
+        catch (Exception ex) { LogFailure(site, jobId, operation, "archive-open", path, "archive stream", ex); throw; }
+    }
+    public void ReconcileIncomplete()
+    {
+        _store.MarkRunningJobsForRecovery();
+        foreach (var site in _store.Sites().Where(x => x.Operation is not (OperationPhase.None or OperationPhase.Completed or OperationPhase.Failed or OperationPhase.RecoveryRequired)))
+        {
+            site.Operation = OperationPhase.RecoveryRequired;
+            site.HealthReason = "The process restarted during deployment. Manual recovery is required; no automatic file mutation was attempted.";
+            _store.SetRecoveryIfActive(site.Id);
+        }
+    }
+    private async Task<(bool Success, string Message)> RunAsync(SiteRecord site, Stream upload, string originalName, string? existingArchive, CancellationToken token, long jobId, string operation)
+    {
+        if (!OperatingSystem.IsWindows())
+            return (false, "Deployment is disabled: IIS operations are Windows-only.");
+        if (!Path.IsPathRooted(site.PhysicalPath) || !Directory.Exists(site.PhysicalPath))
+            return (false, "The IIS site path is unavailable.");
+        if (!originalName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+            return (false, "Only ZIP archives are accepted.");
+        if (_options.RetentionCount < 1 || _options.GateSuccesses < 1 || _options.GateWindowSeconds < 1 || _options.MaxUploadBytes < 1 || _options.MaxExpandedBytes < 1)
+            return (false, "Unsafe deployment configuration.");
+        if (!site.TargetAvailable)
+            return (false, "The IIS application target is unavailable; rediscover it before deployment.");
+        var sitePath = Path.GetFullPath(site.PhysicalPath);
+        var archiveRoot = PathSafety.ResolvePrivate(_root, _options.ArchivePath);
+        Directory.CreateDirectory(archiveRoot);
+        if (PathSafety.IsWithin(sitePath, archiveRoot) || PathSafety.IsWithin(archiveRoot, sitePath))
+            return (false, "The target and private archive paths must not overlap.");
+        var gate = _locks.GetOrAdd(jobId > 0 ? _store.Site(site.Id)?.ParentSiteId ?? site.ParentSiteId : site.ParentSiteId.Length == 0 ? site.Id : site.ParentSiteId, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(token);
+        string? archive = existingArchive, staging = null, snapshot = null;
+        var backup = (string?)null;
+        var backupRecordAdded = false;
+        var poolPlan = (PoolDeploymentPlan?)null;
+        var poolStopped = false;
+        var operationId = $"{DateTime.UtcNow:yyyyMMddHHmmss}_{Guid.NewGuid():N}";
+        var wasStarted = string.Equals(site.IisState, "Started", StringComparison.OrdinalIgnoreCase);
+        var filesMutationStarted = false;
+        var backupValidation = (string?)null;
+        var createLiveBackup = DeploymentOrderingChecks.ShouldCreateLiveBackup(operation == "restore");
+        try
+        {
+            if (site.Operation is not (OperationPhase.None or OperationPhase.Staging or OperationPhase.Completed or OperationPhase.Failed))
+                return (false, "Another deployment operation is incomplete.");
+            _store.ReconcileActive(site.Id);
+            var storageToken = ApplicationTargetIdentity.StorageToken(site.Id);
+            staging = Path.Combine(archiveRoot, $".staging_{storageToken}_{operationId}");
+            archive = existingArchive ?? Path.Combine(archiveRoot, $"{storageToken}_{operationId}.zip");
+            if (existingArchive is null)
+            {
+                LogPhase(site, jobId, operation, "upload-saving", $"destination={Path.GetFullPath(archive)}");
+                await SaveUpload(upload, archive, token, site.Id, jobId, operation);
+                LogPhase(site, jobId, operation, "upload-saved", $"path={Path.GetFullPath(archive)}");
+            }
+            RevalidateTarget(site);
+            var resolvedPool = _iis.ResolveDeploymentPool(site);
+            poolPlan = resolvedPool;
+            LogPhase(site, jobId, operation, "validation-extraction-started", $"source={Path.GetFullPath(archive)} destination={Path.GetFullPath(staging)}");
+            if (existingArchive is not null && !File.Exists(existingArchive))
+                throw new InvalidOperationException("The selected archive is unavailable.");
+            ValidateAndExtract(archive, staging, site, jobId, operation);
+            LogPhase(site, jobId, operation, "validation-extraction-completed", $"destination={Path.GetFullPath(staging)}");
+            snapshot = Path.Combine(archiveRoot, $".recovery_{storageToken}_{operationId}");
+            SetPhase(site, OperationPhase.Staging, staging, snapshot);
+            LogPhase(site, jobId, operation, "quiescence-started", $"stopping shared pool {resolvedPool.PoolName} once");
+            SetPhase(site, OperationPhase.Quiescing, staging, snapshot);
+            poolStopped = true;
+            if (!await _iis.QuiesceForDeploymentAsync(resolvedPool, token))
+            {
+                poolStopped = true;
+                throw new InvalidOperationException("Unable to confirm IIS application-pool shutdown; live files were not changed.");
+            }
+            LogPhase(site, jobId, operation, "quiescence-completed", "shared pool and worker processes stopped");
+            RevalidateTarget(site);
+            _iis.ResolveDeploymentPool(site);
+            SetPhase(site, OperationPhase.Snapshot, staging, snapshot);
+            CopyTree(sitePath, snapshot, site, jobId, operation);
+            if (createLiveBackup)
+            {
+                backup = Path.Combine(archiveRoot, $"{storageToken}_live_{operationId}.zip");
+                LogPhase(site, jobId, operation, "backup-persist-started", $"source={Path.GetFullPath(snapshot)} destination={Path.GetFullPath(backup)}");
+                await CreateBackupArchive(snapshot, backup, token);
+                backupValidation = Path.Combine(archiveRoot, $".backup-validate_{storageToken}_{operationId}");
+                ValidateAndExtract(backup, backupValidation, site, jobId, operation);
+                TryDelete(backupValidation);
+                backupValidation = null;
+                _store.AddArchive(new ArchiveRecord { SiteId = site.Id, Path = backup, OriginalName = $"Live site backup — {DateTimeOffset.UtcNow:yyyy-MM-dd HH:mm:ss} UTC.zip", CreatedUtc = DateTimeOffset.UtcNow, Successful = true, Active = false });
+                backupRecordAdded = true;
+                LogPhase(site, jobId, operation, "backup-persist-completed", $"path={Path.GetFullPath(backup)}");
+            }
+            RevalidateTarget(site);
+            _iis.ResolveDeploymentPool(site);
+            SetPhase(site, OperationPhase.Deploying, staging, snapshot);
+            filesMutationStarted = true;
+            LogPhase(site, jobId, operation, "live-file-replace-started", $"source={Path.GetFullPath(staging)} destination={sitePath}");
+            ReplaceSite(sitePath, staging, _options.PreservedFolders, site, jobId, operation);
+            LogPhase(site, jobId, operation, "live-file-replace-completed", $"destination={sitePath}");
+            SetPhase(site, OperationPhase.Verifying, staging, snapshot);
+            LogPhase(site, jobId, operation, "start-health-gate-started", "restarting shared application pool and checking every application using it");
+            if (!await StartAndGateAsync(site, resolvedPool, token, jobId, operation))
+                throw new InvalidOperationException("Health gate failed after deployment.");
+            site.ActiveArchive = null;
+            site.Operation = OperationPhase.Completed;
+            site.SnapshotPath = null;
+            site.StagingPath = null;
+            site.HealthReason = "Deployment completed.";
+            _store.UpdateOperation(site);
+            _store.Retain(site.Id, _options.RetentionCount, jobId);
+            return (true, "Deployment completed successfully.");
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Deployment failed for site {SiteId}; job {JobId}; operation {Operation}; rollback will be attempted", site.Id, jobId, operation); site.Operation = OperationPhase.Restoring; site.SnapshotPath = snapshot; site.StagingPath = staging; site.HealthReason = ex.Message; _store.UpdateOperation(site); LogPhase(site, jobId, operation, "rollback-started", $"snapshot={snapshot ?? "none"}");
-            try { if (filesMutationStarted) { if (snapshot is null || !Directory.Exists(snapshot)) throw new InvalidOperationException("No recovery snapshot exists."); var rollbackPlan = _iis.ResolveDeploymentPool(site); LogPhase(site, jobId, operation, "rollback-re-quiescence-started", "stopping shared pool before restore"); if (!await _iis.QuiesceForDeploymentAsync(rollbackPlan, CancellationToken.None)) throw new InvalidOperationException("Rollback stopped: IIS shutdown could not be confirmed; recovery snapshot was preserved."); LogPhase(site, jobId, operation, "rollback-re-quiescence-completed", "shared pool and worker processes stopped"); RevalidateTarget(site); ReplaceSite(sitePath, snapshot, _options.PreservedFolders, site, jobId, operation); if (wasStarted && !await StartAndGateAsync(site, rollbackPlan, CancellationToken.None, jobId, operation)) throw new InvalidOperationException("Rollback/start verification failed: the shared application pool or required application health checks failed."); poolStopped = false; } else if (poolStopped && wasStarted) { var safePlan = poolPlan ?? _iis.ResolveDeploymentPool(site); if (!_iis.StartDeploymentPool(safePlan) || !_iis.SetState(site, true)) throw new InvalidOperationException("Pre-mutation failure recovery could not restart the original IIS pool/site; manual recovery is required."); poolStopped = false; } LogPhase(site, jobId, operation, "rollback-recovery-completed", "original site and shared application pool restored and health verified"); site.Operation = OperationPhase.Failed; site.SnapshotPath = null; site.StagingPath = null; site.HealthReason = $"Deployment failed and rollback verified: {ex.Message}"; _store.UpdateOperation(site); try { _store.Retain(site.Id, _options.RetentionCount, jobId); } catch (Exception retainError) { _logger.LogError(retainError, "Backup retention failed for site {SiteId}; archives preserved", site.Id); } return (false, site.HealthReason); }
+            _logger.LogError(ex, "Deployment failed for site {SiteId}; job {JobId}; operation {Operation}; rollback will be attempted", site.Id, jobId, operation);
+            site.Operation = OperationPhase.Restoring;
+            site.SnapshotPath = snapshot;
+            site.StagingPath = staging;
+            site.HealthReason = ex.Message;
+            _store.UpdateOperation(site);
+            LogPhase(site, jobId, operation, "rollback-started", $"snapshot={snapshot ?? "none"}");
+            try
+            {
+                if (filesMutationStarted)
+                {
+                    if (snapshot is null || !Directory.Exists(snapshot))
+                        throw new InvalidOperationException("No recovery snapshot exists.");
+                    var rollbackPlan = _iis.ResolveDeploymentPool(site);
+                    LogPhase(site, jobId, operation, "rollback-re-quiescence-started", "stopping shared pool before recovery");
+                    if (!await _iis.QuiesceForDeploymentAsync(rollbackPlan, CancellationToken.None))
+                        throw new InvalidOperationException("Recovery stopped: IIS shutdown could not be confirmed; recovery snapshot was preserved.");
+                    LogPhase(site, jobId, operation, "rollback-re-quiescence-completed", "shared pool and worker processes stopped");
+                    RevalidateTarget(site);
+                    ReplaceSite(sitePath, snapshot, _options.PreservedFolders, site, jobId, operation);
+                    if (wasStarted && !await StartAndGateAsync(site, rollbackPlan, CancellationToken.None, jobId, operation))
+                        throw new InvalidOperationException("Recovery/start verification failed: the shared application pool or required application health checks failed.");
+                    poolStopped = false;
+                }
+                else if (poolStopped && wasStarted)
+                {
+                    var safePlan = poolPlan ?? _iis.ResolveDeploymentPool(site);
+                    if (!_iis.StartDeploymentPool(safePlan) || !_iis.SetState(site, true))
+                        throw new InvalidOperationException("Pre-mutation failure recovery could not restart the original IIS pool/site; manual recovery is required.");
+                    poolStopped = false;
+                }
+                LogPhase(site, jobId, operation, "rollback-recovery-completed", "site recovery and shared application pool restored and health verified");
+                site.Operation = OperationPhase.Failed;
+                site.SnapshotPath = null;
+                site.StagingPath = null;
+                site.HealthReason = $"{(operation == "restore" ? "Restore" : "Deployment")} failed and recovery verified: {ex.Message}";
+                _store.UpdateOperation(site);
+                try
+                {
+                    _store.Retain(site.Id, _options.RetentionCount, jobId);
+                }
+                catch (Exception retainError) { _logger.LogError(retainError, "Backup retention failed for site {SiteId}; archives preserved", site.Id); }
+                return (false, site.HealthReason);
+            }
             catch (Exception rollback) { _logger.LogCritical(rollback, "Rollback failed for site {SiteId}; job {JobId}; operation {Operation}; manual recovery is required", site.Id, jobId, operation); site.Operation = OperationPhase.RecoveryRequired; site.HealthReason = $"Manual recovery required. Deployment: {ex.Message}; rollback: {rollback.Message}"; _store.UpdateOperation(site); try { _store.Retain(site.Id, _options.RetentionCount, jobId); } catch (Exception retainError) { _logger.LogError(retainError, "Backup retention failed for site {SiteId}; archives preserved", site.Id); } return (false, site.HealthReason); }
         }
         finally { if (site.Operation != OperationPhase.RecoveryRequired) { TryDelete(staging); TryDelete(snapshot); } if (backupValidation is not null) TryDelete(backupValidation); if (backup is not null && !backupRecordAdded && site.Operation != OperationPhase.RecoveryRequired) TryDelete(backup); if (existingArchive is null && archive is not null && !_store.HasPendingArchive(archive)) await DeleteTemporaryUploadAsync(archive, site.Id, jobId, operation); gate.Release(); }
@@ -52,17 +241,158 @@ public sealed class DeploymentService
     private void RevalidateTarget(SiteRecord site)
     {
         var latest = _store.Site(site.Id);
-        if (latest is null || !latest.TargetAvailable || latest.ParentSiteId != site.ParentSiteId || ApplicationTargetIdentity.NormalizePath(latest.ApplicationPath) != ApplicationTargetIdentity.NormalizePath(site.ApplicationPath) || !string.Equals(Path.GetFullPath(latest.PhysicalPath), Path.GetFullPath(site.PhysicalPath), StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("The stored IIS target changed; rediscover and review it before deployment.");
-        if (!_iis.IsCurrentTarget(site)) throw new InvalidOperationException("IIS application mapping changed; rediscover and review it before deployment.");
-        var cursor = new DirectoryInfo(Path.GetFullPath(site.PhysicalPath)); while (cursor is not null) { PathSafety.RejectReparse(cursor.FullName); cursor = cursor.Parent; }
+        if (latest is null || !latest.TargetAvailable || latest.ParentSiteId != site.ParentSiteId || ApplicationTargetIdentity.NormalizePath(latest.ApplicationPath) != ApplicationTargetIdentity.NormalizePath(site.ApplicationPath) || !string.Equals(Path.GetFullPath(latest.PhysicalPath), Path.GetFullPath(site.PhysicalPath), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("The stored IIS target changed; rediscover and review it before deployment.");
+        if (!_iis.IsCurrentTarget(site))
+            throw new InvalidOperationException("IIS application mapping changed; rediscover and review it before deployment.");
+        var cursor = new DirectoryInfo(Path.GetFullPath(site.PhysicalPath));
+        while (cursor is not null)
+        {
+            PathSafety.RejectReparse(cursor.FullName);
+            cursor = cursor.Parent;
+        }
     }
-    private void SetPhase(SiteRecord site, OperationPhase phase, string? staging, string? snapshot) { site.Operation = phase; site.StagingPath = staging; site.SnapshotPath = snapshot; _store.UpdateOperation(site); }
-    private async Task SaveUpload(Stream input, string path, CancellationToken token, string siteId, long? jobId, string operation) { var temp = path + ".uploading"; try { await using (var output = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.WriteThrough)) { var buffer = new byte[81920]; long total = 0; int read; while ((read = await input.ReadAsync(buffer, token)) > 0) { total = checked(total + read); if (total > _options.MaxUploadBytes) throw new InvalidOperationException("The upload exceeds the configured byte limit."); await output.WriteAsync(buffer.AsMemory(0, read), token); } await output.FlushAsync(token); output.Flush(true); } using (var zip = ZipFile.OpenRead(temp)) { if (zip.Entries.Count > _options.MaxArchiveEntries) throw new InvalidOperationException("The archive contains too many entries."); ArchiveLayout.Validate(zip.Entries.Select(x => x.FullName)); } File.Move(temp, path); } catch (Exception ex) { LogFailure(null, jobId, operation, "upload-save", temp, path, ex, siteId); throw; } finally { if (File.Exists(temp)) File.Delete(temp); } }
-    private void ValidateAndExtract(string archive, string staging, SiteRecord site, long jobId, string operation) { try { using var zip = ZipFile.OpenRead(archive); if (zip.Entries.Count > _options.MaxArchiveEntries) throw new InvalidOperationException("The archive contains too many entries."); ArchiveLayout.Validate(zip.Entries.Select(x => x.FullName)); Directory.CreateDirectory(staging); long expanded = 0; foreach (var entry in zip.Entries) { expanded = checked(expanded + entry.Length); if (expanded > _options.MaxExpandedBytes) throw new InvalidOperationException("The expanded archive exceeds the configured safety limit."); var destination = Path.GetFullPath(Path.Combine(staging, entry.FullName.Replace('/', Path.DirectorySeparatorChar))); if (!PathSafety.IsWithin(staging, destination)) throw new SecurityException("Archive entry escapes staging."); if (entry.FullName.EndsWith('/')) { Directory.CreateDirectory(destination); continue; } Directory.CreateDirectory(Path.GetDirectoryName(destination)!); using var input = entry.Open(); using var output = File.Create(destination); input.CopyTo(output); PathSafety.RejectReparse(destination); } } catch (Exception ex) { LogFailure(site, jobId, operation, "archive-validate-extract", archive, staging, ex); throw; } }
-    private async Task<bool> StartAndGateAsync(SiteRecord site, PoolDeploymentPlan plan, CancellationToken token, long jobId, string operation) { if (!_iis.StartDeploymentPool(plan) || !_iis.SetState(site, true)) return false; LogPhase(site, jobId, operation, "application-pool-and-site-started", $"shared pool {plan.PoolName} restarted; health checks={plan.Targets.Count}"); foreach (var target in plan.Targets) if (!await GateAsync(target, token, jobId, operation)) return false; return true; }
-    private async Task<bool> GateAsync(SiteRecord site, CancellationToken token, long jobId, string operation) { var deadline = DateTimeOffset.UtcNow.AddSeconds(_options.GateWindowSeconds); var successes = 0; while (DateTimeOffset.UtcNow < deadline) { var observation = await _health.EvaluateAsync(site, token); _store.UpdateHealth(site.Id, observation); _store.SaveObservation(site.Id, observation); if (observation.Overall == HealthTier.Healthy) { if (++successes >= _options.GateSuccesses) return true; } else successes = 0; await Task.Delay(TimeSpan.FromSeconds(1), token); } return false; }
-    private void ReplaceSite(string target, string source, IEnumerable<string> preserved, SiteRecord site, long jobId, string operation) { try { var keep = (preserved ?? []).Select(x => x.Replace('\\', Path.DirectorySeparatorChar).Trim(Path.DirectorySeparatorChar)).Where(x => x.Length > 0 && PathSafety.IsSafeEntry(x.Replace(Path.DirectorySeparatorChar, '/'))).ToArray(); foreach (var relative in keep) PathSafety.RejectReparse(Path.Combine(target, relative)); foreach (var item in Directory.EnumerateFileSystemEntries(target)) { var relative = Path.GetRelativePath(target, item); if (keep.Any(x => relative.Equals(x, StringComparison.OrdinalIgnoreCase) || relative.StartsWith(x + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))) continue; PathSafety.RejectReparse(item); if (Directory.Exists(item)) Directory.Delete(item, true); else File.Delete(item); } CopyTree(source, target, site, jobId, operation); } catch (Exception ex) { LogFailure(site, jobId, operation, "live-file-replace", source, target, ex); throw; } }
-    private void CopyTree(string source, string destination, SiteRecord site, long jobId, string operation) { try { PathSafety.RejectReparse(source); Directory.CreateDirectory(destination); foreach (var file in Directory.EnumerateFiles(source)) { PathSafety.RejectReparse(file); File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), true); } foreach (var dir in Directory.EnumerateDirectories(source)) { PathSafety.RejectReparse(dir); CopyTree(dir, Path.Combine(destination, Path.GetFileName(dir)), site, jobId, operation); } } catch (Exception ex) { LogFailure(site, jobId, operation, "tree-copy", source, destination, ex); throw; } }
+    private void SetPhase(SiteRecord site, OperationPhase phase, string? staging, string? snapshot)
+    {
+        site.Operation = phase;
+        site.StagingPath = staging;
+        site.SnapshotPath = snapshot;
+        _store.UpdateOperation(site);
+    }
+    private async Task SaveUpload(Stream input, string path, CancellationToken token, string siteId, long? jobId, string operation)
+    {
+        var temp = path + ".uploading";
+        try
+        {
+            await using (var output = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.WriteThrough))
+            {
+                var buffer = new byte[81920];
+                long total = 0;
+                int read;
+                while ((read = await input.ReadAsync(buffer, token)) > 0)
+                {
+                    total = checked(total + read);
+                    if (total > _options.MaxUploadBytes)
+                        throw new InvalidOperationException("The upload exceeds the configured byte limit.");
+                    await output.WriteAsync(buffer.AsMemory(0, read), token);
+                }
+                await output.FlushAsync(token);
+                output.Flush(true);
+            }
+            using (var zip = ZipFile.OpenRead(temp))
+            {
+                if (zip.Entries.Count > _options.MaxArchiveEntries)
+                    throw new InvalidOperationException("The archive contains too many entries.");
+                ArchiveLayout.Validate(zip.Entries.Select(x => x.FullName));
+            }
+            File.Move(temp, path);
+        }
+        catch (Exception ex) { LogFailure(null, jobId, operation, "upload-save", temp, path, ex, siteId); throw; }
+        finally { if (File.Exists(temp)) File.Delete(temp); }
+    }
+    private void ValidateAndExtract(string archive, string staging, SiteRecord site, long jobId, string operation)
+    {
+        try
+        {
+            using var zip = ZipFile.OpenRead(archive);
+            if (zip.Entries.Count > _options.MaxArchiveEntries)
+                throw new InvalidOperationException("The archive contains too many entries.");
+            ArchiveLayout.Validate(zip.Entries.Select(x => x.FullName));
+            Directory.CreateDirectory(staging);
+            long expanded = 0;
+            foreach (var entry in zip.Entries)
+            {
+                expanded = checked(expanded + entry.Length);
+                if (expanded > _options.MaxExpandedBytes)
+                    throw new InvalidOperationException("The expanded archive exceeds the configured safety limit.");
+                var destination = Path.GetFullPath(Path.Combine(staging, entry.FullName.Replace('/', Path.DirectorySeparatorChar)));
+                if (!PathSafety.IsWithin(staging, destination))
+                    throw new SecurityException("Archive entry escapes staging.");
+                if (entry.FullName.EndsWith('/'))
+                {
+                    Directory.CreateDirectory(destination);
+                    continue;
+                }
+                Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                using var input = entry.Open();
+                using var output = File.Create(destination);
+                input.CopyTo(output);
+                PathSafety.RejectReparse(destination);
+            }
+        }
+        catch (Exception ex) { LogFailure(site, jobId, operation, "archive-validate-extract", archive, staging, ex); throw; }
+    }
+    private async Task<bool> StartAndGateAsync(SiteRecord site, PoolDeploymentPlan plan, CancellationToken token, long jobId, string operation)
+    {
+        if (!_iis.StartDeploymentPool(plan) || !_iis.SetState(site, true))
+            return false;
+        LogPhase(site, jobId, operation, "application-pool-and-site-started", $"shared pool {plan.PoolName} restarted; health checks={plan.Targets.Count}");
+        foreach (var target in plan.Targets)
+            if (!await GateAsync(target, token, jobId, operation))
+                return false;
+        return true;
+    }
+    private async Task<bool> GateAsync(SiteRecord site, CancellationToken token, long jobId, string operation)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(_options.GateWindowSeconds);
+        var successes = 0;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            var observation = await _health.EvaluateAsync(site, token);
+            _store.UpdateHealth(site.Id, observation);
+            _store.SaveObservation(site.Id, observation);
+            if (observation.Overall == HealthTier.Healthy)
+            {
+                if (++successes >= _options.GateSuccesses)
+                    return true;
+            }
+            else
+                successes = 0;
+            await Task.Delay(TimeSpan.FromSeconds(1), token);
+        }
+        return false;
+    }
+    private void ReplaceSite(string target, string source, IEnumerable<string> preserved, SiteRecord site, long jobId, string operation)
+    {
+        try
+        {
+            var keep = (preserved ?? []).Select(x => x.Replace('\\', Path.DirectorySeparatorChar).Trim(Path.DirectorySeparatorChar)).Where(x => x.Length > 0 && PathSafety.IsSafeEntry(x.Replace(Path.DirectorySeparatorChar, '/'))).ToArray();
+            foreach (var relative in keep)
+                PathSafety.RejectReparse(Path.Combine(target, relative));
+            foreach (var item in Directory.EnumerateFileSystemEntries(target))
+            {
+                var relative = Path.GetRelativePath(target, item);
+                if (keep.Any(x => relative.Equals(x, StringComparison.OrdinalIgnoreCase) || relative.StartsWith(x + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)))
+                    continue;
+                PathSafety.RejectReparse(item);
+                if (Directory.Exists(item))
+                    Directory.Delete(item, true);
+                else
+                    File.Delete(item);
+            }
+            CopyTree(source, target, site, jobId, operation);
+        }
+        catch (Exception ex) { LogFailure(site, jobId, operation, "live-file-replace", source, target, ex); throw; }
+    }
+    private void CopyTree(string source, string destination, SiteRecord site, long jobId, string operation)
+    {
+        try
+        {
+            PathSafety.RejectReparse(source);
+            Directory.CreateDirectory(destination);
+            foreach (var file in Directory.EnumerateFiles(source))
+            {
+                PathSafety.RejectReparse(file);
+                File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), true);
+            }
+            foreach (var dir in Directory.EnumerateDirectories(source))
+            {
+                PathSafety.RejectReparse(dir);
+                CopyTree(dir, Path.Combine(destination, Path.GetFileName(dir)), site, jobId, operation);
+            }
+        }
+        catch (Exception ex) { LogFailure(site, jobId, operation, "tree-copy", source, destination, ex); throw; }
+    }
     private static async Task CreateBackupArchive(string source, string destination, CancellationToken token)
     {
         var temporary = destination + ".creating";
@@ -73,9 +403,16 @@ public sealed class DeploymentService
                 using (var zip = new ZipArchive(output, ZipArchiveMode.Create, true))
                     foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
                     {
-                        token.ThrowIfCancellationRequested(); PathSafety.RejectReparse(file); var entryName = Path.GetRelativePath(source, file).Replace(Path.DirectorySeparatorChar, '/'); var entry = zip.CreateEntry(entryName, CompressionLevel.Optimal); await using var input = File.OpenRead(file); await using var entryStream = entry.Open(); await input.CopyToAsync(entryStream, token);
+                        token.ThrowIfCancellationRequested();
+                        PathSafety.RejectReparse(file);
+                        var entryName = Path.GetRelativePath(source, file).Replace(Path.DirectorySeparatorChar, '/');
+                        var entry = zip.CreateEntry(entryName, CompressionLevel.Optimal);
+                        await using var input = File.OpenRead(file);
+                        await using var entryStream = entry.Open();
+                        await input.CopyToAsync(entryStream, token);
                     }
-                await output.FlushAsync(token); output.Flush(true);
+                await output.FlushAsync(token);
+                output.Flush(true);
             }
             File.Move(temporary, destination);
         }
@@ -83,21 +420,42 @@ public sealed class DeploymentService
     }
     private void LogPhase(SiteRecord site, long? jobId, string operation, string phase, string details) => _logger.LogInformation("Deployment phase {Phase}; site {SiteId}; job {JobId}; operation {Operation}; {Details}", phase, site.Id, jobId, operation, details);
     private void LogFailure(SiteRecord? site, long? jobId, string operation, string ioOperation, string source, string destination, Exception ex, string? siteId = null) => _logger.LogError(ex, "Deployment I/O failed; site {SiteId}; job {JobId}; operation {Operation}; ioOperation {IoOperation}; source {SourcePath}; destination {DestinationPath}; HResult {HResult}", site?.Id ?? siteId, jobId, operation, ioOperation, Path.GetFullPath(source), Path.GetFullPath(destination), ex.HResult);
-    private void TryDelete(string? path) { if (path is null) return; try { if (Directory.Exists(path)) Directory.Delete(path, true); else if (File.Exists(path)) File.Delete(path); } catch (Exception ex) { _logger.LogError(ex, "Cleanup failed for {Path}", path); } }
+    private void TryDelete(string? path)
+    {
+        if (path is null)
+            return;
+        try
+        {
+            if (Directory.Exists(path))
+                Directory.Delete(path, true);
+            else if (File.Exists(path))
+                File.Delete(path);
+        }
+        catch (Exception ex) { _logger.LogError(ex, "Cleanup failed for {Path}", path); }
+    }
     private async Task DeleteTemporaryUploadAsync(string path, string siteId, long? jobId, string operation)
     {
         for (var attempt = 0; attempt < 3; attempt++)
         {
-            try { if (File.Exists(path)) File.Delete(path); }
+            try
+            {
+                if (File.Exists(path))
+                    File.Delete(path);
+            }
             catch (Exception ex) when (attempt < 2) { _logger.LogWarning(ex, "Temporary deployment upload deletion attempt {Attempt} failed; site {SiteId}; job {JobId}; operation {Operation}; path {Path}", attempt + 1, siteId, jobId, operation, path); }
             catch (Exception ex) { _logger.LogError(ex, "Temporary deployment upload deletion failed after {Attempts} attempts; site {SiteId}; job {JobId}; operation {Operation}; path {Path}", attempt + 1, siteId, jobId, operation, path); return; }
-            if (!File.Exists(path)) return;
-            if (attempt < 2) await Task.Delay(TimeSpan.FromMilliseconds(200 * (attempt + 1)));
+            if (!File.Exists(path))
+                return;
+            if (attempt < 2)
+                await Task.Delay(TimeSpan.FromMilliseconds(200 * (attempt + 1)));
         }
         _logger.LogError("Temporary deployment upload remains after {Attempts} deletion attempts; site {SiteId}; job {JobId}; operation {Operation}; path {Path}", 3, siteId, jobId, operation, path);
     }
 }
-public static class DeploymentServiceExtensions { public static void ReconcileIncomplete(this DeploymentService service) => service.ReconcileIncomplete(); }
+public static class DeploymentServiceExtensions
+{
+    public static void ReconcileIncomplete(this DeploymentService service) => service.ReconcileIncomplete();
+}
 
 public static class DeploymentStoreChecks
 {
@@ -107,21 +465,135 @@ public static class DeploymentStoreChecks
     }
     public static void Run()
     {
-        var root = Path.Combine(Path.GetTempPath(), "iisdeploy-store-check-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root);
+        var root = Path.Combine(Path.GetTempPath(), "iisdeploy-store-check-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
         try
         {
-            var store = new DeploymentStore(new TestEnvironment(root)); store.Upsert(new SiteRecord { Id = "7", Name = "Main", ParentSiteId = "7", PhysicalPath = root });
+            var store = new DeploymentStore(new TestEnvironment(root));
+            store.Upsert(new SiteRecord { Id = "7", Name = "Main", ParentSiteId = "7", PhysicalPath = root });
             store.Upsert(new SiteRecord { Id = "app:7:/admin", Name = "Main admin", ParentSiteId = "7", ApplicationPath = "/admin", TargetKind = TargetKind.Application, PhysicalPath = root, Operation = OperationPhase.None });
-            var first = new DeploymentJob { SiteId = "app:7:/admin", ArchivePath = "a.zip", OriginalName = "a.zip" }; if (!store.TryEnqueue(first) || store.TryEnqueue(new DeploymentJob { SiteId = "7", ArchivePath = "b.zip", OriginalName = "b.zip" })) throw new InvalidOperationException("Parent reservation contention check failed.");
-            if (store.ClaimNextJob() is not { } claimed) throw new InvalidOperationException("Queued job claim check failed."); store.CompleteJob(claimed.Id, true); if (store.Reservations().Count != 0) throw new InvalidOperationException("Successful reservation cleanup check failed.");
-            var archives = Enumerable.Range(1, 4).Select(i => { var path = Path.Combine(root, $"{i}.zip"); using (var zip = new ZipArchive(File.Create(path), ZipArchiveMode.Create)) using (var writer = new StreamWriter(zip.CreateEntry("index.html").Open())) writer.Write($"version-{i}"); return new ArchiveRecord { SiteId = "7", Path = path, OriginalName = $"{i}.zip", CreatedUtc = DateTimeOffset.UtcNow.AddMinutes(i), Successful = true }; }).ToArray(); foreach (var archive in archives) store.AddArchive(archive);
-            store.Upsert(new SiteRecord { Id = "7", Name = "Main", ParentSiteId = "7", PhysicalPath = root }); store.ReconcileActive("7"); if (store.Archives("7").Any(x => x.Active) || store.Archives("7").Count(x => !x.Active) != 4) throw new InvalidOperationException("Backup-only history eligibility check failed.");
-            var selected = store.Archives("7")[0]; var restore = new DeploymentJob { SiteId = "7", ArchivePath = selected.Path, OriginalName = selected.OriginalName, IsRestore = true }; if (!store.TryEnqueue(restore) || !File.Exists(selected.Path) || store.Archives("7").Single(x => x.Path == selected.Path).Active) throw new InvalidOperationException("Retained restore source eligibility check failed."); store.ClaimNextJob(); store.CompleteJob(restore.Id, true); store.AddArchive(new ArchiveRecord { SiteId = "7", Path = Path.Combine(root, "backup-new.zip"), OriginalName = "live backup", CreatedUtc = DateTimeOffset.UtcNow.AddHours(1), Successful = true }); File.WriteAllText(Path.Combine(root, "backup-new.zip"), "backup"); store.Retain("7", 2); if (store.Archives("7").Count > 2 || store.Archives("7").Any(x => x.Active)) throw new InvalidOperationException("Backup-only retention check failed.");
+            var first = new DeploymentJob { SiteId = "app:7:/admin", ArchivePath = "a.zip", OriginalName = "a.zip" };
+            if (!store.TryEnqueue(first) || store.TryEnqueue(new DeploymentJob { SiteId = "7", ArchivePath = "b.zip", OriginalName = "b.zip" }))
+                throw new InvalidOperationException("Parent reservation contention check failed.");
+            if (store.ClaimNextJob() is not { } claimed)
+                throw new InvalidOperationException("Queued job claim check failed.");
+            store.CompleteJob(claimed.Id, true);
+            if (store.Reservations().Count != 0)
+                throw new InvalidOperationException("Successful reservation cleanup check failed.");
+            var archives = Enumerable.Range(1, 4).Select(i => { var path = Path.Combine(root, $"{i}.zip"); using (var zip = new ZipArchive(File.Create(path), ZipArchiveMode.Create)) using (var writer = new StreamWriter(zip.CreateEntry("index.html").Open())) writer.Write($"version-{i}"); return new ArchiveRecord { SiteId = "7", Path = path, OriginalName = $"{i}.zip", CreatedUtc = DateTimeOffset.UtcNow.AddMinutes(i), Successful = true }; }).ToArray();
+            foreach (var archive in archives)
+                store.AddArchive(archive);
+            store.Upsert(new SiteRecord { Id = "7", Name = "Main", ParentSiteId = "7", PhysicalPath = root });
+            store.ReconcileActive("7");
+            if (store.Archives("7").Any(x => x.Active) || store.Archives("7").Count(x => !x.Active) != 4)
+                throw new InvalidOperationException("Backup-only history eligibility check failed.");
+            var selected = store.Archives("7")[0];
+            var restore = new DeploymentJob { SiteId = "7", ArchivePath = selected.Path, OriginalName = selected.OriginalName, IsRestore = true };
+            if (!store.TryEnqueue(restore) || !File.Exists(selected.Path) || store.Archives("7").Single(x => x.Path == selected.Path).Active)
+                throw new InvalidOperationException("Retained restore source eligibility check failed.");
+            store.ClaimNextJob();
+            store.CompleteJob(restore.Id, true);
+            store.AddArchive(new ArchiveRecord { SiteId = "7", Path = Path.Combine(root, "backup-new.zip"), OriginalName = "live backup", CreatedUtc = DateTimeOffset.UtcNow.AddHours(1), Successful = true });
+            File.WriteAllText(Path.Combine(root, "backup-new.zip"), "backup");
+            store.Retain("7", 2);
+            if (store.Archives("7").Count > 2 || store.Archives("7").Any(x => x.Active))
+                throw new InvalidOperationException("Backup-only retention check failed.");
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }
 }
-public static class DeploymentSafetyChecks { public static void Run() { var storageToken = ApplicationTargetIdentity.StorageToken("app:89:/api"); if (storageToken.Contains(':') || storageToken.Contains('/') || storageToken.Contains('\\') || storageToken.Length != 71 || storageToken.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '-')) throw new InvalidOperationException("Filesystem storage token check failed."); try { ArchiveLayout.Validate(["wrapper/index.html"]); throw new InvalidOperationException("Wrapper layout was accepted."); } catch (InvalidOperationException ex) when (ex.Message == ArchiveLayout.WrapperError) { } if (PathSafety.IsSafeEntry("../escape.txt") || PathSafety.IsSafeEntry("/absolute.txt") || PathSafety.IsWithin("/var/site", "/var/site2") || !DeploymentOrderingChecks.CanMutate(true, true) || DeploymentOrderingChecks.CanMutate(false, true) || DeploymentOrderingChecks.CanMutate(true, false)) throw new InvalidOperationException("Deployment safety check failed."); try { PathSafety.ResolvePrivate(Path.GetTempPath(), "../escape"); throw new InvalidOperationException("Escaping private storage path was accepted."); } catch (InvalidOperationException ex) when (ex.Message == "Configured storage path must remain under the application root.") { } try { ArchiveLayout.Validate(["../escape.txt"]); throw new InvalidOperationException("Traversal archive path was accepted."); } catch (InvalidOperationException ex) when (ex.Message == "The archive contains an unsafe path.") { } DeploymentOrderingChecks.StartSequenceCheck(); UploadRenameCheck.Run(); SnapshotArchiveCheck.Run(); } }
-public static class DeploymentOrderingChecks { public static bool CanMutate(bool shutdownConfirmed, bool snapshotReady) => shutdownConfirmed && snapshotReady; public static bool StartSequenceSucceeds(bool poolStarted, bool siteStarted, bool healthPassed) => poolStarted && siteStarted && healthPassed; public static void StartSequenceCheck() { if (!StartSequenceSucceeds(true, true, true) || StartSequenceSucceeds(false, true, true) || StartSequenceSucceeds(true, false, true) || StartSequenceSucceeds(true, true, false)) throw new InvalidOperationException("Application-pool start and health-gate sequencing check failed."); } }
-internal static class UploadRenameCheck { private sealed class TestEnvironment(string root) : IHostEnvironment { public string EnvironmentName { get; set; } = "Development"; public string ApplicationName { get; set; } = "IISWebDeploy"; public string ContentRootPath { get; set; } = root; public Microsoft.Extensions.FileProviders.IFileProvider ContentRootFileProvider { get; set; } = new Microsoft.Extensions.FileProviders.NullFileProvider(); } public static void Run() { var root = Path.Combine(Path.GetTempPath(), "iisdeploy-upload-check-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root); try { var path = Path.Combine(root, "upload.zip"); using var archive = new MemoryStream(); using (var zip = new ZipArchive(archive, ZipArchiveMode.Create, true)) { using var writer = new StreamWriter(zip.CreateEntry("index.html").Open()); writer.Write("ok"); } archive.Position = 0; var service = new DeploymentService(null!, Microsoft.Extensions.Options.Options.Create(new DeploymentOptions()), new TestEnvironment(root), null!, null!, Microsoft.Extensions.Logging.Abstractions.NullLogger<DeploymentService>.Instance); var save = typeof(DeploymentService).GetMethod("SaveUpload", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!; ((Task)save.Invoke(service, [archive, path, CancellationToken.None, "self-check", null, "self-check"])!).GetAwaiter().GetResult(); if (!File.Exists(path) || File.Exists(path + ".uploading")) throw new InvalidOperationException("Upload archive rename check failed."); } finally { if (Directory.Exists(root)) Directory.Delete(root, true); } } }
-internal static class SnapshotArchiveCheck { public static void Run() { var root = Path.Combine(Path.GetTempPath(), "iisdeploy-snapshot-check-" + Guid.NewGuid().ToString("N")); var source = Path.Combine(root, "source"); var extracted = Path.Combine(root, "extracted"); var archive = Path.Combine(root, "backup.zip"); Directory.CreateDirectory(Path.Combine(source, "nested")); File.WriteAllText(Path.Combine(source, "index.html"), "live"); File.WriteAllText(Path.Combine(source, "nested", "config.json"), "{\"version\":1}"); try { var create = typeof(DeploymentService).GetMethod("CreateBackupArchive", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!; ((Task)create.Invoke(null, [source, archive, CancellationToken.None])!).GetAwaiter().GetResult(); if (!File.Exists(archive)) throw new InvalidOperationException("Backup archive creation check failed."); var service = new DeploymentService(null!, Microsoft.Extensions.Options.Options.Create(new DeploymentOptions()), new DeploymentStoreChecks.TestEnvironment(root), null!, null!, Microsoft.Extensions.Logging.Abstractions.NullLogger<DeploymentService>.Instance); var validate = typeof(DeploymentService).GetMethod("ValidateAndExtract", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!; validate.Invoke(service, [archive, extracted, null!, 0L, "self-check"]); if (File.ReadAllText(Path.Combine(extracted, "index.html")) != "live" || File.ReadAllText(Path.Combine(extracted, "nested", "config.json")) != "{\"version\":1}") throw new InvalidOperationException("Backup archive round-trip check failed."); } finally { if (Directory.Exists(root)) Directory.Delete(root, true); } } }
+public static class DeploymentSafetyChecks
+{
+    public static void Run()
+    {
+        var storageToken = ApplicationTargetIdentity.StorageToken("app:89:/api");
+        if (storageToken.Contains(':') || storageToken.Contains('/') || storageToken.Contains('\\') || storageToken.Length != 71 || storageToken.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '-'))
+            throw new InvalidOperationException("Filesystem storage token check failed.");
+        try
+        {
+            ArchiveLayout.Validate(["wrapper/index.html"]);
+            throw new InvalidOperationException("Wrapper layout was accepted.");
+        }
+        catch (InvalidOperationException ex) when (ex.Message == ArchiveLayout.WrapperError) { }
+        if (PathSafety.IsSafeEntry("../escape.txt") || PathSafety.IsSafeEntry("/absolute.txt") || PathSafety.IsWithin("/var/site", "/var/site2") || !DeploymentOrderingChecks.CanMutate(true, true) || DeploymentOrderingChecks.CanMutate(false, true) || DeploymentOrderingChecks.CanMutate(true, false))
+            throw new InvalidOperationException("Deployment safety check failed.");
+        try
+        {
+            PathSafety.ResolvePrivate(Path.GetTempPath(), "../escape");
+            throw new InvalidOperationException("Escaping private storage path was accepted.");
+        }
+        catch (InvalidOperationException ex) when (ex.Message == "Configured storage path must remain under the application root.") { }
+        try
+        {
+            ArchiveLayout.Validate(["../escape.txt"]);
+            throw new InvalidOperationException("Traversal archive path was accepted.");
+        }
+        catch (InvalidOperationException ex) when (ex.Message == "The archive contains an unsafe path.") { }
+        DeploymentOrderingChecks.StartSequenceCheck();
+        UploadRenameCheck.Run();
+        SnapshotArchiveCheck.Run();
+    }
+}
+public static class DeploymentOrderingChecks
+{
+    public static bool CanMutate(bool shutdownConfirmed, bool snapshotReady) => shutdownConfirmed && snapshotReady; public static bool StartSequenceSucceeds(bool poolStarted, bool siteStarted, bool healthPassed) => poolStarted && siteStarted && healthPassed; public static bool ShouldCreateLiveBackup(bool isRestore) => !isRestore; public static void StartSequenceCheck()
+    {
+        if (!StartSequenceSucceeds(true, true, true) || StartSequenceSucceeds(false, true, true) || StartSequenceSucceeds(true, false, true) || StartSequenceSucceeds(true, true, false) || ShouldCreateLiveBackup(true) || !ShouldCreateLiveBackup(false))
+            throw new InvalidOperationException("Application-pool sequencing and restore backup check failed.");
+    }
+}
+internal static class UploadRenameCheck
+{
+    private sealed class TestEnvironment(string root) : IHostEnvironment
+    {
+        public string EnvironmentName { get; set; } = "Development"; public string ApplicationName { get; set; } = "IISWebDeploy"; public string ContentRootPath { get; set; } = root; public Microsoft.Extensions.FileProviders.IFileProvider ContentRootFileProvider { get; set; } = new Microsoft.Extensions.FileProviders.NullFileProvider();
+    }
+    public static void Run()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "iisdeploy-upload-check-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var path = Path.Combine(root, "upload.zip");
+            using var archive = new MemoryStream();
+            using (var zip = new ZipArchive(archive, ZipArchiveMode.Create, true))
+            {
+                using var writer = new StreamWriter(zip.CreateEntry("index.html").Open());
+                writer.Write("ok");
+            }
+            archive.Position = 0;
+            var service = new DeploymentService(null!, Microsoft.Extensions.Options.Options.Create(new DeploymentOptions()), new TestEnvironment(root), null!, null!, Microsoft.Extensions.Logging.Abstractions.NullLogger<DeploymentService>.Instance);
+            var save = typeof(DeploymentService).GetMethod("SaveUpload", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+            ((Task)save.Invoke(service, [archive, path, CancellationToken.None, "self-check", null, "self-check"])!).GetAwaiter().GetResult();
+            if (!File.Exists(path) || File.Exists(path + ".uploading"))
+                throw new InvalidOperationException("Upload archive rename check failed.");
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+}
+internal static class SnapshotArchiveCheck
+{
+    public static void Run()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "iisdeploy-snapshot-check-" + Guid.NewGuid().ToString("N"));
+        var source = Path.Combine(root, "source");
+        var extracted = Path.Combine(root, "extracted");
+        var archive = Path.Combine(root, "backup.zip");
+        Directory.CreateDirectory(Path.Combine(source, "nested"));
+        File.WriteAllText(Path.Combine(source, "index.html"), "live");
+        File.WriteAllText(Path.Combine(source, "nested", "config.json"), "{\"version\":1}");
+        try
+        {
+            var create = typeof(DeploymentService).GetMethod("CreateBackupArchive", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!;
+            ((Task)create.Invoke(null, [source, archive, CancellationToken.None])!).GetAwaiter().GetResult();
+            if (!File.Exists(archive))
+                throw new InvalidOperationException("Backup archive creation check failed.");
+            var service = new DeploymentService(null!, Microsoft.Extensions.Options.Options.Create(new DeploymentOptions()), new DeploymentStoreChecks.TestEnvironment(root), null!, null!, Microsoft.Extensions.Logging.Abstractions.NullLogger<DeploymentService>.Instance);
+            var validate = typeof(DeploymentService).GetMethod("ValidateAndExtract", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+            validate.Invoke(service, [archive, extracted, null!, 0L, "self-check"]);
+            if (File.ReadAllText(Path.Combine(extracted, "index.html")) != "live" || File.ReadAllText(Path.Combine(extracted, "nested", "config.json")) != "{\"version\":1}")
+                throw new InvalidOperationException("Backup archive round-trip check failed.");
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+}
