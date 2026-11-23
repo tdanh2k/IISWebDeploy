@@ -26,14 +26,8 @@
             ? ApplicationTargetIdentity.DisplayNameForApplication(parent?.Name, site.Name, site.ApplicationPath)
             : site.Name;
         var parentBusy = Busy(parentId);
-        <section class="site-card @(DropActive(site.Id) ? "drop-active" : "")" aria-labelledby="site-@site.Id"
-                 @ondragenter="e => DragEnter(site, e)" @ondragover="e => DragOver(site, e)"
-                 @ondragleave="e => DragLeave(site, e)" @ondrop="e => Drop(site, e)" @ondragover:preventDefault
-                 @ondrop:preventDefault @ondragenter:stopPropagation @ondragleave:stopPropagation>
-            @if (DropActive(site.Id))
-            {
-                <div class="drop-overlay" aria-hidden="true">Drop here to deploy</div>
-            }
+        <section class="site-card" aria-labelledby="site-@site.Id" data-deployment-drop>
+            <div class="drop-overlay" aria-hidden="true">Drop here to deploy</div>
             <div class="card-head">
                 <h2 id="site-@site.Id">@displayName</h2>
             </div>
@@ -126,7 +120,6 @@
     private IReadOnlyList<ParentReservation> _reservations = [];
     private PeriodicTimer? _reservationTimer;
     private CancellationTokenSource? _refreshCancellation;
-    private readonly Dictionary<string, int> _dropDepth = new(StringComparer.OrdinalIgnoreCase);
     protected override void OnInitialized() => Refresh();
     protected override void OnAfterRender(bool firstRender)
     {
@@ -221,44 +214,6 @@ StringComparison.OrdinalIgnoreCase));
     }
     private ArchiveRecord? Selected(string id) => _selected.GetValueOrDefault(id) is var value && value > 0 ?
 Store.Archive(value) : null;
-    private bool DropActive(string id) => _dropDepth.GetValueOrDefault(id) > 0;
-    private void DragEnter(SiteRecord site, DragEventArgs e)
-    {
-        if (!CanDrop(site) || !e.DataTransfer!.Types.Contains("Files"))
-            return;
-        _dropDepth[site.Id] = _dropDepth.GetValueOrDefault(site.Id) + 1;
-        _ = InvokeAsync(StateHasChanged);
-    }
-    private void DragOver(SiteRecord site, DragEventArgs e)
-    {
-        if (CanDrop(site) && e.DataTransfer!.Types.Contains("Files"))
-            e.DataTransfer.DropEffect = "copy";
-    }
-    private void DragLeave(SiteRecord site, DragEventArgs e)
-    {
-        if (!_dropDepth.TryGetValue(site.Id, out var depth))
-            return;
-        if (depth <= 1)
-            _dropDepth.Remove(site.Id);
-        else
-            _dropDepth[site.Id] = depth - 1;
-        _ = InvokeAsync(StateHasChanged);
-    }
-    private async Task Drop(SiteRecord site, DragEventArgs e)
-    {
-        try
-        {
-            if (!CanDrop(site) || !e.DataTransfer!.Types.Contains("Files"))
-                return;
-            await JS.InvokeVoidAsync("deploymentDrop", $"upload-{site.Id}", e.DataTransfer.Files);
-        }
-        finally { _dropDepth.Remove(site.Id); await InvokeAsync(StateHasChanged); }
-    }
-    private bool CanDrop(SiteRecord site)
-    {
-        var parentId = site.ParentSiteId.Length == 0 ? site.Id : site.ParentSiteId;
-        return site.TargetAvailable && !Busy(parentId);
-    }
     private void SaveEndpoint(SiteRecord site, string? value)
     {
         try
@@ -331,16 +286,6 @@ result.Message;
     [Inject] private IJSRuntime JS { get; set; } = default!;
     private ValueTask<bool> JSConfirm() => JS.InvokeAsync<bool>("confirm", "Restore this version? The current deployment will be discarded.");
 }
-<script>
-    window.deploymentDrop = (id, droppedFiles) => {
-        const input = document.getElementById(id);
-        if (!input || !droppedFiles?.length) return;
-        const files = new DataTransfer();
-        for (const file of droppedFiles) files.items.add(file);
-        input.files = files.files;
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-    };
-</script>
 <style>
     .site-grid {
         display: grid;
@@ -364,11 +309,15 @@ result.Message;
         outline-offset: -2px;
     }
 
+    .site-card.drop-active .drop-overlay {
+        display: grid;
+    }
+
     .drop-overlay {
         position: absolute;
         inset: 0;
         z-index: 2;
-        display: grid;
+        display: none;
         place-items: center;
         border-radius: inherit;
         background: rgb(239 246 255 / .92);
