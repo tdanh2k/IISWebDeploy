@@ -17,12 +17,25 @@
             </Alert>
         }
         <form method="post" action="/auth/login">
-            <AntiforgeryToken /><label for="password">Mật khẩu</label><Input id="password" name="password"
-                                                                             type="password" autocomplete="current-password" required /><Button type="submit">Đăng nhập</Button>
+            <AntiforgeryToken />
+            <label for="password">Mật khẩu</label>
+            <Input id="password" name="password"
+                   type="password" autocomplete="current-password" required />
+            <Button type="submit">Đăng nhập</Button>
         </form>
     </CardContent>
 </Card>
-@code { [SupplyParameterFromQuery] public int? error { get; set; } private bool Error => error == 1; }
+@code
+{
+    [SupplyParameterFromQuery]
+    public int? error
+    {
+        get;
+        set;
+    }
+
+    private bool Error => error == 1;
+}
 <style>
     .login-card {
         max-width: 28rem;

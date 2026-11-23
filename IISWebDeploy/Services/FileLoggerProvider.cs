@@ -25,14 +25,24 @@ public sealed class FileLoggerProvider : ILoggerProvider
 
     private void Write(string category, LogLevel level, EventId eventId, string message, Exception? exception)
     {
-        if (_disposed) return;
+        if (_disposed)
+            return;
         try
         {
-            var entry = JsonSerializer.Serialize(new { timestamp = DateTimeOffset.UtcNow, level = level.ToString(), category, eventId = eventId.Id, message, exception = exception?.ToString() });
+            var entry = JsonSerializer.Serialize(new
+            {
+                timestamp = DateTimeOffset.UtcNow,
+                level = level.ToString(),
+                category,
+                eventId = eventId.Id,
+                message,
+                exception = exception?.ToString()
+            });
             lock (_writeLock)
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
-                if (File.Exists(_path) && new FileInfo(_path).Length + System.Text.Encoding.UTF8.GetByteCount(entry) + 1 > _maxBytes) Rotate();
+                if (File.Exists(_path) && new FileInfo(_path).Length + System.Text.Encoding.UTF8.GetByteCount(entry) + 1 > _maxBytes)
+                    Rotate();
                 using var stream = new FileStream(_path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
                 using var writer = new StreamWriter(stream);
                 writer.WriteLine(entry);
@@ -47,9 +57,12 @@ public sealed class FileLoggerProvider : ILoggerProvider
         {
             var source = i == 1 ? _path : $"{_path}.{i - 1}";
             var target = $"{_path}.{i}";
-            if (!File.Exists(source)) continue;
-            if (i == _retainedFiles) File.Delete(source);
-            else File.Move(source, target, true);
+            if (!File.Exists(source))
+                continue;
+            if (i == _retainedFiles)
+                File.Delete(source);
+            else
+                File.Move(source, target, true);
         }
     }
 
@@ -59,7 +72,8 @@ public sealed class FileLoggerProvider : ILoggerProvider
         public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Information && logLevel != LogLevel.None;
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {
-            if (IsEnabled(logLevel)) provider.Write(category, logLevel, eventId, formatter(state, exception), exception);
+            if (IsEnabled(logLevel))
+                provider.Write(category, logLevel, eventId, formatter(state, exception), exception);
         }
     }
 }
@@ -76,7 +90,8 @@ public static class FileLoggerChecks
             var logger = provider.CreateLogger("check");
             Parallel.For(0, 100, i => logger.LogInformation("entry {EntryId}", i));
             var lines = File.ReadAllLines(path);
-            if (lines.Length != 100 || lines.Any(line => !line.Contains("entry", StringComparison.Ordinal) || !line.Contains("timestamp", StringComparison.Ordinal))) throw new InvalidOperationException("File logger concurrency self-check failed.");
+            if (lines.Length != 100 || lines.Any(line => !line.Contains("entry", StringComparison.Ordinal) || !line.Contains("timestamp", StringComparison.Ordinal)))
+                throw new InvalidOperationException("File logger concurrency self-check failed.");
         }
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
     }
@@ -86,9 +101,11 @@ public static class FileLoggerExtensions
 {
     public static ILoggingBuilder AddConfiguredFileLogger(this ILoggingBuilder logging, IConfiguration configuration, IHostEnvironment environment)
     {
-        if (!configuration.GetValue("Logging:File:Enabled", true)) return logging;
+        if (!configuration.GetValue("Logging:File:Enabled", true))
+            return logging;
         var relativePath = configuration["Logging:File:Path"] ?? "logs/application.log";
-        if (Path.IsPathRooted(relativePath) || relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Any(part => part == "..")) return logging;
+        if (Path.IsPathRooted(relativePath) || relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Any(part => part == ".."))
+            return logging;
         try
         {
             var fullPath = Path.GetFullPath(Path.Combine(environment.ContentRootPath, relativePath));
